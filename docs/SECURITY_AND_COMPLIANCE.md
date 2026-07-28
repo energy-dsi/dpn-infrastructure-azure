@@ -12,12 +12,12 @@ See the root `README.md`'s ["Scope, support, and things to know before you rely 
 
 | Area | What's implemented | Relates to |
 |---|---|---|
-| Network isolation | Every data-plane resource (Key Vault, ACR, storage, AKS API server, Service Bus, VM) is reachable only via private endpoint - no public network access by default | CIS Azure Foundations §6-7 (Networking), NIST 800-53 SC-7 (Boundary Protection) |
-| Encryption at rest | Customer-managed key (CMK) support across storage, ACR, AKS node disks/etcd, Service Bus, and VM OS disks - see each module's "Customer-Managed Key" section | CIS Azure Foundations §8 (Other Security Considerations), NIST 800-53 SC-28 (Protection of Information at Rest) |
-| Encryption in transit | TLS 1.2 minimum enforced on storage and Service Bus; AKS API server and all private endpoints use TLS | CIS Azure Foundations §7 (Networking), NIST 800-53 SC-8 |
-| Identity and access | RBAC-only authorization on Key Vault (no access policies); Azure AD-only on AKS (local accounts disabled); workload identity federation for pod-to-Azure auth instead of stored credentials; storage accounts default to Azure AD/RBAC access instead of account keys | CIS Azure Foundations §1 (Identity), §4 (Key Vault), NIST 800-53 AC-3, IA-2 |
-| Audit logging | Every module's diagnostic settings feed a central Log Analytics workspace by default | CIS Azure Foundations §5 (Logging and Monitoring), NIST 800-53 AU-2, AU-12 |
-| Secrets management | Centralized in Key Vault; `expiration_date` supported (and should always be set) on every secret/key | CIS Azure Foundations §4 (Key Vault), NIST 800-53 SC-12 |
+| Network isolation | Every data-plane resource (Key Vault, ACR, storage, AKS API server, Service Bus, VM) is reachable only via private endpoint - no public network access by default | CIS Azure Foundations 6-7 (Networking), NIST 800-53 SC-7 (Boundary Protection) |
+| Encryption at rest | Customer-managed key (CMK) support across storage, ACR, AKS node disks/etcd, Service Bus, and VM OS disks - see each module's "Customer-Managed Key" section | CIS Azure Foundations 8 (Other Security Considerations), NIST 800-53 SC-28 (Protection of Information at Rest) |
+| Encryption in transit | TLS 1.2 minimum enforced on storage and Service Bus; AKS API server and all private endpoints use TLS | CIS Azure Foundations 7 (Networking), NIST 800-53 SC-8 |
+| Identity and access | RBAC-only authorization on Key Vault (no access policies); Azure AD-only on AKS (local accounts disabled); workload identity federation for pod-to-Azure auth instead of stored credentials; storage accounts default to Azure AD/RBAC access instead of account keys | CIS Azure Foundations 1 (Identity), 4 (Key Vault), NIST 800-53 AC-3, IA-2 |
+| Audit logging | Every module's diagnostic settings feed a central Log Analytics workspace by default | CIS Azure Foundations 5 (Logging and Monitoring), NIST 800-53 AU-2, AU-12 |
+| Secrets management | Centralized in Key Vault; `expiration_date` supported (and should always be set) on every secret/key | CIS Azure Foundations 4 (Key Vault), NIST 800-53 SC-12 |
 | Least privilege | Per-principal role assignments (Data Reader/Sender/Contributor/Owner patterns) instead of broad built-in roles, throughout | NIST 800-53 AC-6 |
 
 ## Known gaps in the default configuration, and why
