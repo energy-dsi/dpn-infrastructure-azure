@@ -7,7 +7,6 @@
 # - Key Vault for secrets management
 # - Azure Container Registry for container images
 # - Azure Kubernetes Service for container orchestration
-# - Cosmos DB for NoSQL data storage
 # - Event Grid for event-driven architecture
 # ==============================================================================
 
@@ -250,12 +249,6 @@ module "aks" {
 
   depends_on = [module.networking, module.loganalytics]
 }
-
-# ========================================
-# Cosmos DB
-# Disabled after one-time import deployment.
-# ========================================
-
 
 # ========================================
 # Developer Storage Account Module
