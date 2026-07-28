@@ -1,0 +1,204 @@
+# ==============================================================================
+# Azure DevOps equivalent of .github/workflows/destroy-dpn.yml
+# ==============================================================================
+# Destroys ALL OpenTofu-managed infrastructure in this DPN subscription.
+#
+# SAFEGUARDS:
+#   1. Manual trigger only (this pipeline should not be added to any CI trigger)
+#   2. Typed confirmation required: type "DESTROY-DPN" to proceed
+#   3. Manual approval gate (Environment: dpn-approval)
+#   4. AKS has prevent_destroy=true - pass forceDestroyAks=true to override
+#
+# If your landing zone applies management locks (e.g. CanNotDelete) to the
+# resource groups this config manages, remove them before running this
+# pipeline - that is a platform/governance concern outside this template's
+# scope.
+#
+# PREREQUISITES: same service connection, agent pool, dpn-secrets and
+# dpn-config variable groups as deploy-dpn.yml.
+# ==============================================================================
+
+name: 'DPN - DESTROY Infrastructure ($(Date:yyyyMMdd)$(Rev:.r))'
+
+trigger: none
+pr: none
+
+parameters:
+  - name: confirmation
+    displayName: 'Type "DESTROY-DPN" to confirm destruction of all resources'
+    type: string
+    default: ''
+  - name: forceDestroyAks
+    displayName: 'Override AKS prevent_destroy lifecycle protection'
+    type: boolean
+    default: false
+  - name: poolName
+    displayName: 'Self-hosted agent pool name'
+    type: string
+    default: 'self-hosted-pool'
+  - name: serviceConnection
+    displayName: 'ARM service connection (workload identity federation) for your DPN subscription'
+    type: string
+    default: 'sc-dpn-azure'
+
+variables:
+  - group: dpn-secrets
+  - group: dpn-config
+  - name: TOFU_VERSION
+    value: '1.9.0'
+  - name: TF_WORKING_DIR
+    value: 'dpn-azure-infrastructure'
+  - name: TFVARS_FILE
+    value: 'environments/dpn_infrastructure.tfvars'
+
+pool:
+  name: '${{ parameters.poolName }}'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Validate confirmation string
+  # ===========================================================================
+  - stage: Validate
+    displayName: 'Validate Confirmation'
+    jobs:
+      - job: CheckConfirmation
+        displayName: 'Check Confirmation String'
+        steps:
+          - bash: |
+              if [ "${{ parameters.confirmation }}" != "DESTROY-DPN" ]; then
+                echo "##vso[task.logissue type=error]Confirmation string mismatch. Expected: DESTROY-DPN, Got: ${{ parameters.confirmation }}"
+                exit 1
+              fi
+              echo "Confirmation accepted. Proceeding to approval gate."
+            displayName: 'Check Confirmation String'
+
+          - bash: |
+              echo "========================================================"
+              echo "  WARNING: DESTRUCTIVE OPERATION"
+              echo "========================================================"
+              echo "  This pipeline will DESTROY all OpenTofu-managed"
+              echo "  infrastructure in subscription: $(ARM_SUBSCRIPTION_ID)"
+              echo ""
+              echo "  forceDestroyAks = ${{ parameters.forceDestroyAks }}"
+              echo ""
+              echo "  This action is IRREVERSIBLE."
+              echo "========================================================"
+            displayName: 'Warn: Destructive Operation'
+
+  # ===========================================================================
+  # Stage 2: Manual Approval Gate
+  # ===========================================================================
+  - stage: Approve
+    displayName: 'Manual Approval'
+    dependsOn: Validate
+    condition: succeeded()
+    jobs:
+      - deployment: ApprovalGate
+        displayName: 'Manual Approval'
+        environment: 'dpn-approval'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - bash: echo "Manual approval received. Proceeding with destroy."
+                  displayName: 'Approval Granted'
+
+  # ===========================================================================
+  # Stage 3: OpenTofu Destroy
+  # ===========================================================================
+  - stage: Destroy
+    displayName: 'OpenTofu Destroy'
+    dependsOn: Approve
+    condition: succeeded()
+    jobs:
+      - job: OpenTofuDestroy
+        displayName: 'OpenTofu Destroy'
+        steps:
+          - checkout: self
+
+          - bash: |
+              set -e
+              curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+              chmod +x install-opentofu.sh
+              ./install-opentofu.sh --install-method standalone --opentofu-version "$(TOFU_VERSION)"
+              tofu --version
+            displayName: 'Install OpenTofu $(TOFU_VERSION)'
+
+          - ${{ if eq(parameters.forceDestroyAks, true) }}:
+            - bash: |
+                sed -i 's/prevent_destroy = true/prevent_destroy = false/g' "$(Build.SourcesDirectory)/modules/aks/main.tf"
+                echo "AKS prevent_destroy patched in modules/aks/main.tf"
+              displayName: 'Override AKS prevent_destroy (if requested)'
+
+          - task: AzureCLI@2
+            displayName: 'OpenTofu Init'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_USE_OIDC=true
+                export ARM_USE_AZUREAD=true
+                export ARM_SUBSCRIPTION_ID="$(ARM_SUBSCRIPTION_ID)"
+                export TF_VAR_vm_admin_password="$(VM_ADMIN_PASSWORD)"
+
+                cd "$(TF_WORKING_DIR)"
+                timeout 600 tofu init \
+                  -reconfigure \
+                  -backend-config="resource_group_name=$(TF_STATE_RG)" \
+                  -backend-config="storage_account_name=$(TF_STATE_STORAGE)" \
+                  -backend-config="container_name=tfstate" \
+                  -backend-config="key=dpn.tfstate" \
+                  -backend-config="use_azuread_auth=true" \
+                  || { echo "##vso[task.logissue type=error]tofu init failed"; exit 1; }
+
+          - task: AzureCLI@2
+            displayName: 'Remove networking module from state before destroy'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                # module.networking associates NSGs/rules with your existing VNet's
+                # subnets via local-exec provisioners rather than owning the
+                # subnets themselves; their destroy-time provisioners are unreliable
+                # against a subnet this config doesn't own, so drop the module from
+                # state instead of letting `tofu destroy` run them. The NSGs and
+                # rules this module created are left in place - delete them
+                # manually afterwards if you also want them gone.
+                cd "$(TF_WORKING_DIR)"
+                tofu state list 2>/dev/null | grep '^module\.networking\.' | while IFS= read -r addr; do
+                  [ -z "$addr" ] && continue
+                  case "$addr" in module.networking.data.*) continue ;; esac
+                  echo "  state rm: $addr"
+                  tofu state rm "$addr" || true
+                done
+
+          - task: AzureCLI@2
+            displayName: 'OpenTofu Destroy'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_USE_OIDC=true
+                export ARM_USE_AZUREAD=true
+                export ARM_SUBSCRIPTION_ID="$(ARM_SUBSCRIPTION_ID)"
+                export TF_VAR_vm_admin_password="$(VM_ADMIN_PASSWORD)"
+
+                cd "$(TF_WORKING_DIR)"
+                echo "Running tofu destroy ($(ARM_SUBSCRIPTION_ID))"
+                tofu destroy \
+                  -var-file="$(TFVARS_FILE)" \
+                  -parallelism=4 \
+                  -auto-approve \
+                  -no-color
+                echo "Destroy complete"

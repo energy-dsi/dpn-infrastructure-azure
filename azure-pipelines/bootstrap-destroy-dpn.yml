@@ -1,0 +1,104 @@
+# ==============================================================================
+# Azure DevOps equivalent of .github/workflows/bootstrap-destroy-dpn.yml
+# ==============================================================================
+# Tears down the bootstrap resources (tfstate storage account, private
+# endpoint, NSG, subnet) so bootstrap-dpn.yml can be re-run cleanly.
+#
+# If your landing zone applies management locks (e.g. CanNotDelete) to these
+# resource groups, remove them before running this pipeline - that is a
+# platform/governance concern outside this template's scope.
+#
+# PREREQUISITES: same service connection, agent pool and dpn-config variable
+# group (BACKEND_RESOURCE_GROUP, BACKEND_STORAGE_ACCOUNT, VNET_RESOURCE_GROUP,
+# VNET_NAME) as bootstrap-dpn.yml.
+# ==============================================================================
+
+name: 'DPN - Destroy Bootstrap ($(Date:yyyyMMdd)$(Rev:.r))'
+
+trigger: none
+pr: none
+
+parameters:
+  - name: poolName
+    displayName: 'Self-hosted agent pool name'
+    type: string
+    default: 'self-hosted-pool'
+  - name: serviceConnection
+    displayName: 'ARM service connection (workload identity federation) for your DPN subscription'
+    type: string
+    default: 'sc-dpn-azure'
+
+variables:
+  - group: dpn-secrets
+  - group: dpn-config
+
+pool:
+  name: '${{ parameters.poolName }}'
+
+stages:
+  - stage: DestroyBootstrap
+    displayName: 'Destroy Bootstrap Resources'
+    jobs:
+      - job: Destroy
+        displayName: 'Destroy Bootstrap Resources'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Delete bootstrap resources (private endpoint, storage account, resource group)'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                ACTUAL_SA_RG=$(az storage account show --name "$(BACKEND_STORAGE_ACCOUNT)" --query resourceGroup -o tsv 2>/dev/null | tr -d '\r\n' || true)
+                if [ -z "$ACTUAL_SA_RG" ]; then
+                  echo "Storage account '$(BACKEND_STORAGE_ACCOUNT)' not found - skipping private endpoint/storage/resource group deletion"
+                else
+                  echo "Storage account '$(BACKEND_STORAGE_ACCOUNT)' found in resource group: $ACTUAL_SA_RG"
+
+                  PE_NAME="pe-$(BACKEND_STORAGE_ACCOUNT)"
+                  PE_STATE=$(az network private-endpoint show --name "$PE_NAME" --resource-group "$ACTUAL_SA_RG" --query "provisioningState" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+                  if [ -n "$PE_STATE" ]; then
+                    echo "Deleting private endpoint $PE_NAME ..."
+                    az network private-endpoint delete --name "$PE_NAME" --resource-group "$ACTUAL_SA_RG" --yes 2>/dev/null || true
+                  fi
+
+                  echo "Deleting storage account $(BACKEND_STORAGE_ACCOUNT) ..."
+                  az storage account delete --name "$(BACKEND_STORAGE_ACCOUNT)" --resource-group "$ACTUAL_SA_RG" --yes
+
+                  echo "Deleting resource group $ACTUAL_SA_RG ..."
+                  az group delete --name "$ACTUAL_SA_RG" --yes --no-wait
+                fi
+
+          - task: AzureCLI@2
+            displayName: 'Delete tfstate subnet and NSG'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                SUBNET_NAME=$(az network vnet subnet list --vnet-name "$(VNET_NAME)" --resource-group "$(VNET_RESOURCE_GROUP)" \
+                  --query "[?contains(name, 'tfstate')].name" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+                TFSTATE_NSG=$(az network nsg list --resource-group "$(VNET_RESOURCE_GROUP)" \
+                  --query "[?contains(name, 'tfstate')].name" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+
+                if [ -z "$SUBNET_NAME" ] && [ -z "$TFSTATE_NSG" ]; then
+                  echo "No tfstate subnet or NSG found in $(VNET_NAME) / $(VNET_RESOURCE_GROUP) - skipping"
+                  exit 0
+                fi
+
+                if [ -n "$SUBNET_NAME" ]; then
+                  echo "Deleting tfstate subnet $SUBNET_NAME ..."
+                  az network vnet subnet delete --name "$SUBNET_NAME" --vnet-name "$(VNET_NAME)" --resource-group "$(VNET_RESOURCE_GROUP)" 2>/dev/null \
+                    && echo "Subnet $SUBNET_NAME deleted" \
+                    || echo "##vso[task.logissue type=warning]Could not delete subnet $SUBNET_NAME - bootstrap re-run will update it in place (Bicep is idempotent)"
+                fi
+
+                if [ -n "$TFSTATE_NSG" ]; then
+                  echo "Deleting NSG $TFSTATE_NSG ..."
+                  az network nsg delete --name "$TFSTATE_NSG" --resource-group "$(VNET_RESOURCE_GROUP)" 2>/dev/null \
+                    && echo "NSG $TFSTATE_NSG deleted" \
+                    || echo "##vso[task.logissue type=warning]Could not delete NSG $TFSTATE_NSG - bootstrap re-run will update it in place (Bicep is idempotent)"
+                fi
+
+          - bash: echo "Bootstrap destroy complete - you can now re-run the bootstrap pipeline"
+            displayName: 'Verify destroy complete'

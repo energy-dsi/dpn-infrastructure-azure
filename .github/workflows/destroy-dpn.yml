@@ -1,0 +1,190 @@
+# ==============================================================================
+# DPN Destroy Workflow
+# ==============================================================================
+# Destroys ALL OpenTofu-managed infrastructure in this DPN subscription.
+#
+# SAFEGUARDS:
+#   1. workflow_dispatch only - never triggered on push
+#   2. Typed confirmation required: type "DESTROY-DPN" to proceed
+#   3. Manual approval gate (GitHub Environment: dpn-approval)
+#   4. AKS has prevent_destroy=true - pass force_destroy_aks=true to override
+#
+# If your landing zone applies management locks (e.g. CanNotDelete) to the
+# resource groups this config manages, remove them before running this
+# workflow - that is a platform/governance concern outside this template's
+# scope.
+#
+# GITHUB SECRETS REQUIRED:  AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID, VM_ADMIN_PASSWORD
+# GITHUB VARIABLES REQUIRED: TF_STATE_RG, TF_STATE_STORAGE (same as deploy-dpn.yml)
+# GITHUB ENVIRONMENT REQUIRED: dpn-approval (with required reviewers)
+# ==============================================================================
+
+name: 'DPN - DESTROY Infrastructure'
+
+on:
+  workflow_dispatch:
+    inputs:
+      confirmation:
+        description: 'Type "DESTROY-DPN" to confirm destruction of all resources'
+        required: true
+        type: string
+      force_destroy_aks:
+        description: 'Override AKS prevent_destroy lifecycle protection'
+        required: true
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+concurrency:
+  group: dpn-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  TOFU_VERSION: '1.9.0'
+  TF_STATE_RG: ${{ vars.TF_STATE_RG }}
+  TF_STATE_STORAGE: ${{ vars.TF_STATE_STORAGE }}
+  TF_WORKING_DIR: 'dpn-azure-infrastructure'
+  TFVARS_FILE: 'environments/dpn_infrastructure.tfvars'
+  ARM_USE_OIDC: 'true'
+  ARM_USE_AZUREAD: 'true'
+  AZURE_CONFIG_DIR: '/tmp/azcfg-${{ github.run_id }}'
+
+jobs:
+  # =============================================================================
+  # Job 1: Validate confirmation string
+  # =============================================================================
+  validate:
+    name: 'Validate Confirmation'
+    runs-on: [self-hosted]
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+    steps:
+      - name: 'Check Confirmation String'
+        run: |
+          if [ "${{ inputs.confirmation }}" != "DESTROY-DPN" ]; then
+            echo "::error::Confirmation string mismatch. Expected: DESTROY-DPN, Got: ${{ inputs.confirmation }}"
+            exit 1
+          fi
+          echo "Confirmation accepted. Proceeding to approval gate."
+
+      - name: 'Warn: Destructive Operation'
+        run: |
+          echo "========================================================"
+          echo "  WARNING: DESTRUCTIVE OPERATION"
+          echo "========================================================"
+          echo "  This workflow will DESTROY all OpenTofu-managed"
+          echo "  infrastructure in subscription: $ARM_SUBSCRIPTION_ID"
+          echo ""
+          echo "  force_destroy_aks = ${{ inputs.force_destroy_aks }}"
+          echo ""
+          echo "  This action is IRREVERSIBLE."
+          echo "========================================================"
+
+  # =============================================================================
+  # Job 2: Manual Approval Gate
+  # =============================================================================
+  approve:
+    name: 'Manual Approval'
+    runs-on: [self-hosted]
+    needs: validate
+    environment: dpn-approval
+    steps:
+      - name: 'Approval Granted'
+        run: echo "Manual approval received. Proceeding with destroy."
+
+  # =============================================================================
+  # Job 3: OpenTofu Destroy
+  # =============================================================================
+  destroy:
+    name: 'OpenTofu Destroy'
+    runs-on: [self-hosted]
+    needs: approve
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Checkout'
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null \
+            || git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git reset --hard 2>/dev/null || true
+          git checkout -f FETCH_HEAD
+          git clean -ffd
+
+      - name: 'Install OpenTofu ${{ env.TOFU_VERSION }}'
+        run: |
+          set -e
+          curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+          chmod +x install-opentofu.sh
+          ./install-opentofu.sh --install-method standalone --opentofu-version "$TOFU_VERSION"
+          tofu --version
+
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'Override AKS prevent_destroy (if requested)'
+        if: inputs.force_destroy_aks == 'true'
+        run: |
+          sed -i 's/prevent_destroy = true/prevent_destroy = false/g' "${GITHUB_WORKSPACE}/modules/aks/main.tf"
+          echo "AKS prevent_destroy patched in modules/aks/main.tf"
+
+      - name: 'OpenTofu Init'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: |
+          set -e
+          timeout 600 tofu init \
+            -reconfigure \
+            -backend-config="resource_group_name=$TF_STATE_RG" \
+            -backend-config="storage_account_name=$TF_STATE_STORAGE" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=dpn.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            || { echo "::error::tofu init failed"; exit 1; }
+
+      - name: 'Remove networking module from state before destroy'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          # module.networking associates NSGs/rules with your existing VNet's
+          # subnets via local-exec provisioners rather than owning the
+          # subnets themselves; their destroy-time provisioners are unreliable
+          # against a subnet this config doesn't own, so drop the module from
+          # state instead of letting `tofu destroy` run them. The NSGs and
+          # rules this module created are left in place - delete them
+          # manually afterwards if you also want them gone.
+          tofu state list 2>/dev/null | grep '^module\.networking\.' | while IFS= read -r addr; do
+            [ -z "$addr" ] && continue
+            case "$addr" in module.networking.data.*) continue ;; esac
+            echo "  state rm: $addr"
+            tofu state rm "$addr" || true
+          done
+
+      - name: 'OpenTofu Destroy'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: |
+          set -e
+          echo "Running tofu destroy ($ARM_SUBSCRIPTION_ID)"
+          tofu destroy \
+            -var-file="$TFVARS_FILE" \
+            -parallelism=4 \
+            -auto-approve \
+            -no-color
+          echo "Destroy complete"

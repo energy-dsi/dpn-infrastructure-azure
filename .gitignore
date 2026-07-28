@@ -1,0 +1,103 @@
+# ==============================================================================
+# .gitignore - DPN Azure Infrastructure (OpenTofu / Bicep)
+# ==============================================================================
+
+# ------------------------------------------------------------------------------
+# OpenTofu / Terraform
+# ------------------------------------------------------------------------------
+# Local state files - never commit state to source control
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Crash log files
+crash.log
+crash.*.log
+
+# Sensitive variable files
+*.tfvars.json
+*.auto.tfvars
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# Plan output - contains sensitive resource data
+tfplan
+*.tfplan
+
+# OpenTofu lock file - commit this to pin provider versions
+# .terraform.lock.hcl
+
+# Local .terraform directory (plugins and modules cache)
+**/.terraform/
+.terraform/
+.terraform.tfstate
+.terraform.tfstate.backup
+
+# Ignore CLI configuration files
+.terraformrc
+terraform.rc
+
+# ------------------------------------------------------------------------------
+# Bicep / ARM
+# ------------------------------------------------------------------------------
+# Compiled ARM templates from Bicep (regenerated on build)
+*.json
+!.devcontainer/**/*.json
+!.vscode/**/*.json
+
+# ------------------------------------------------------------------------------
+# Claude Code
+# ------------------------------------------------------------------------------
+CLAUDE.md
+
+# ------------------------------------------------------------------------------
+# Secrets and credentials - NEVER commit these
+# ------------------------------------------------------------------------------
+*.pem
+*.key
+*.pfx
+*.p12
+*.cer
+*.crt
+.env
+.env.*
+secrets.*
+*secret*
+*password*
+*credential*
+
+# ------------------------------------------------------------------------------
+# OS and editor artefacts
+# ------------------------------------------------------------------------------
+# macOS
+.DS_Store
+.AppleDouble
+.LSOverride
+
+# Windows
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# VS Code
+.vscode/
+!.vscode/extensions.json
+
+# JetBrains IDEs
+.idea/
+*.iml
+
+# ------------------------------------------------------------------------------
+# Logs and temp files
+# ------------------------------------------------------------------------------
+*.log
+*.tmp
+*.bak
+*.swp
+*.orig
+install-opentofu.sh
+plan-output.txt
+apply-output.txt

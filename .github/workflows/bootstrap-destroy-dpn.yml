@@ -1,0 +1,101 @@
+# ==============================================================================
+# Bootstrap Destroy Workflow - DPN
+# ==============================================================================
+# Tears down the bootstrap resources (tfstate storage account, private
+# endpoint, NSG, subnet) so bootstrap-dpn.yml can be re-run cleanly.
+#
+# If your landing zone applies management locks (e.g. CanNotDelete) to these
+# resource groups, remove them before running this workflow - that is a
+# platform/governance concern outside this template's scope.
+#
+# GITHUB SECRETS REQUIRED: AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+# GITHUB VARIABLES REQUIRED: same non-secret variables as bootstrap-dpn.yml
+#   (BACKEND_RESOURCE_GROUP, BACKEND_STORAGE_ACCOUNT, VNET_RESOURCE_GROUP, VNET_NAME)
+# ==============================================================================
+
+name: 'DPN - Destroy Bootstrap'
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dpn-bootstrap
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  BACKEND_RESOURCE_GROUP: ${{ vars.BACKEND_RESOURCE_GROUP }}
+  BACKEND_STORAGE_ACCOUNT: ${{ vars.BACKEND_STORAGE_ACCOUNT }}
+  VNET_RESOURCE_GROUP: ${{ vars.VNET_RESOURCE_GROUP }}
+  VNET_NAME: ${{ vars.VNET_NAME }}
+
+jobs:
+  destroy:
+    name: 'Destroy Bootstrap Resources'
+    runs-on: [self-hosted]
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'Delete bootstrap resources (private endpoint, storage account, resource group)'
+        run: |
+          ACTUAL_SA_RG=$(az storage account show --name "$BACKEND_STORAGE_ACCOUNT" --query resourceGroup -o tsv 2>/dev/null | tr -d '\r\n' || true)
+          if [ -z "$ACTUAL_SA_RG" ]; then
+            echo "Storage account '$BACKEND_STORAGE_ACCOUNT' not found - skipping private endpoint/storage/resource group deletion"
+          else
+            echo "Storage account '$BACKEND_STORAGE_ACCOUNT' found in resource group: $ACTUAL_SA_RG"
+
+            PE_NAME="pe-${BACKEND_STORAGE_ACCOUNT}"
+            PE_STATE=$(az network private-endpoint show --name "$PE_NAME" --resource-group "$ACTUAL_SA_RG" --query "provisioningState" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+            if [ -n "$PE_STATE" ]; then
+              echo "Deleting private endpoint $PE_NAME ..."
+              az network private-endpoint delete --name "$PE_NAME" --resource-group "$ACTUAL_SA_RG" --yes 2>/dev/null || true
+            fi
+
+            echo "Deleting storage account $BACKEND_STORAGE_ACCOUNT ..."
+            az storage account delete --name "$BACKEND_STORAGE_ACCOUNT" --resource-group "$ACTUAL_SA_RG" --yes
+
+            echo "Deleting resource group $ACTUAL_SA_RG ..."
+            az group delete --name "$ACTUAL_SA_RG" --yes --no-wait
+          fi
+
+      - name: 'Delete tfstate subnet and NSG'
+        run: |
+          SUBNET_NAME=$(az network vnet subnet list --vnet-name "$VNET_NAME" --resource-group "$VNET_RESOURCE_GROUP" \
+            --query "[?contains(name, 'tfstate')].name" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+          TFSTATE_NSG=$(az network nsg list --resource-group "$VNET_RESOURCE_GROUP" \
+            --query "[?contains(name, 'tfstate')].name" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+
+          if [ -z "$SUBNET_NAME" ] && [ -z "$TFSTATE_NSG" ]; then
+            echo "No tfstate subnet or NSG found in $VNET_NAME / $VNET_RESOURCE_GROUP - skipping"
+            exit 0
+          fi
+
+          if [ -n "$SUBNET_NAME" ]; then
+            echo "Deleting tfstate subnet $SUBNET_NAME ..."
+            az network vnet subnet delete --name "$SUBNET_NAME" --vnet-name "$VNET_NAME" --resource-group "$VNET_RESOURCE_GROUP" 2>/dev/null \
+              && echo "Subnet $SUBNET_NAME deleted" \
+              || echo "::warning::Could not delete subnet $SUBNET_NAME - bootstrap re-run will update it in place (Bicep is idempotent)"
+          fi
+
+          if [ -n "$TFSTATE_NSG" ]; then
+            echo "Deleting NSG $TFSTATE_NSG ..."
+            az network nsg delete --name "$TFSTATE_NSG" --resource-group "$VNET_RESOURCE_GROUP" 2>/dev/null \
+              && echo "NSG $TFSTATE_NSG deleted" \
+              || echo "::warning::Could not delete NSG $TFSTATE_NSG - bootstrap re-run will update it in place (Bicep is idempotent)"
+          fi
+
+      - name: 'Verify destroy complete'
+        run: |
+          echo "Bootstrap destroy complete - you can now re-run 'DPN - Bootstrap Infrastructure'"
