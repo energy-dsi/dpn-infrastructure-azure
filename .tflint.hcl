@@ -48,11 +48,9 @@ rule "terraform_required_version" {
 # the ROOT module already declares required_providers with a version
 # constraint. Every child module inherits this from the root and does not
 # redeclare its own required_providers block. Confirmed via local tflint run:
-# 19/19 findings in this repo were this single rule, one warning per module
-# file that references a provider resource (modules/bastion, ampls,
-# container_registry, firewall, application_gateway_for_containers,
-# event_grid, loganalytics, keyvault, aks, networking,
-# storage, service_bus, vm, workload_identity).
+# one warning per module file that references a provider resource
+# (modules/aks, ampls, bastion, container_registry, event_grid, keyvault,
+# loganalytics, networking, service_bus, storage, vm, workload_identity).
 rule "terraform_required_providers" {
   enabled = false
 }

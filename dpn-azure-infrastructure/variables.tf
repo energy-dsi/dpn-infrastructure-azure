@@ -720,6 +720,12 @@ variable "dev_storage_min_tls_version" {
   default     = "TLS1_2"
 }
 
+variable "dev_storage_infrastructure_encryption_enabled" {
+  description = "Enable infrastructure (double) encryption at rest. No additional Azure cost. ForceNew - can only be set at account creation."
+  type        = bool
+  default     = true
+}
+
 variable "dev_storage_versioning_enabled" {
   description = "Enable blob versioning"
   type        = bool
@@ -1002,6 +1008,12 @@ variable "file_scanning_storage_min_tls_version" {
   default     = "TLS1_2"
 }
 
+variable "file_scanning_storage_infrastructure_encryption_enabled" {
+  description = "Enable infrastructure (double) encryption at rest. No additional Azure cost. ForceNew - can only be set at account creation."
+  type        = bool
+  default     = true
+}
+
 variable "file_scanning_storage_versioning_enabled" {
   description = "Enable blob versioning"
   type        = bool
@@ -1103,6 +1115,12 @@ variable "observability_logging_storage_min_tls_version" {
   description = "Minimum TLS version"
   type        = string
   default     = "TLS1_2"
+}
+
+variable "observability_logging_storage_infrastructure_encryption_enabled" {
+  description = "Enable infrastructure (double) encryption at rest. No additional Azure cost. ForceNew - can only be set at account creation."
+  type        = bool
+  default     = true
 }
 
 variable "observability_logging_storage_versioning_enabled" {

@@ -311,6 +311,7 @@ dev_storage_account_kind                              = "StorageV2"
 dev_storage_access_tier                               = "Hot"
 dev_storage_public_network_access_enabled             = false
 dev_storage_min_tls_version                           = "TLS1_2"
+dev_storage_infrastructure_encryption_enabled         = true # No additional cost; ForceNew - set at creation only
 dev_storage_versioning_enabled                        = true
 dev_storage_blob_retention_days                       = 7
 dev_storage_container_retention_days                  = 7
@@ -404,44 +405,46 @@ service_bus_subnet_name                   = "snet-sb-dpn-uks-01"
 # ========================================
 # File Scanning Service Storage Account
 # ========================================
-file_scanning_storage_account_name                  = "stfsdpnuks01"
-file_scanning_storage_resource_group_name           = "rg-stfs-dpn-uks-01"
-file_scanning_storage_account_tier                  = "Standard"
-file_scanning_storage_replication_type              = "LRS"
-file_scanning_storage_account_kind                  = "StorageV2"
-file_scanning_storage_access_tier                   = "Hot"
-file_scanning_storage_public_network_access_enabled = false
-file_scanning_storage_min_tls_version               = "TLS1_2"
-file_scanning_storage_versioning_enabled            = true
-file_scanning_storage_blob_retention_days           = 7
-file_scanning_storage_container_retention_days      = 7
-file_scanning_storage_dev_team_spn_object_id        = "00000000-0000-0000-0000-000000000000"
-file_scanning_storage_blob_reader_principal_ids     = ["00000000-0000-0000-0000-000000000000"]
-file_scanning_storage_create_blob_endpoint          = true
-file_scanning_storage_enable_diagnostic_settings    = true
-file_scanning_storage_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
-file_scanning_storage_subnet_name                   = "snet-stfs-dpn-uks-01"
+file_scanning_storage_account_name                      = "stfsdpnuks01"
+file_scanning_storage_resource_group_name               = "rg-stfs-dpn-uks-01"
+file_scanning_storage_account_tier                      = "Standard"
+file_scanning_storage_replication_type                  = "LRS"
+file_scanning_storage_account_kind                      = "StorageV2"
+file_scanning_storage_access_tier                       = "Hot"
+file_scanning_storage_public_network_access_enabled     = false
+file_scanning_storage_min_tls_version                   = "TLS1_2"
+file_scanning_storage_infrastructure_encryption_enabled = true # No additional cost; ForceNew - set at creation only
+file_scanning_storage_versioning_enabled                = true
+file_scanning_storage_blob_retention_days               = 7
+file_scanning_storage_container_retention_days          = 7
+file_scanning_storage_dev_team_spn_object_id            = "00000000-0000-0000-0000-000000000000"
+file_scanning_storage_blob_reader_principal_ids         = ["00000000-0000-0000-0000-000000000000"]
+file_scanning_storage_create_blob_endpoint              = true
+file_scanning_storage_enable_diagnostic_settings        = true
+file_scanning_storage_encryption_enabled                = true # CMK via keyvault_initial_keys["cmk-key"] above
+file_scanning_storage_subnet_name                       = "snet-stfs-dpn-uks-01"
 
 # ========================================
 # Observability Logging Storage Account
 # ========================================
-observability_logging_storage_account_name                  = "stobsdpnuks01"
-observability_logging_storage_resource_group_name           = "rg-obs-dpn-uks-01"
-observability_logging_storage_account_tier                  = "Standard"
-observability_logging_storage_replication_type              = "LRS"
-observability_logging_storage_account_kind                  = "StorageV2"
-observability_logging_storage_access_tier                   = "Hot"
-observability_logging_storage_public_network_access_enabled = false
-observability_logging_storage_min_tls_version               = "TLS1_2"
-observability_logging_storage_versioning_enabled            = true
-observability_logging_storage_blob_retention_days           = 7
-observability_logging_storage_container_retention_days      = 7
-observability_logging_storage_dev_team_spn_object_id        = "00000000-0000-0000-0000-000000000000"
-observability_logging_storage_blob_reader_principal_ids     = ["00000000-0000-0000-0000-000000000000"]
-observability_logging_storage_create_blob_endpoint          = true
-observability_logging_storage_enable_diagnostic_settings    = true
-observability_logging_storage_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
-observability_logging_storage_subnet_name                   = "snet-stfs-dpn-uks-01"
+observability_logging_storage_account_name                      = "stobsdpnuks01"
+observability_logging_storage_resource_group_name               = "rg-obs-dpn-uks-01"
+observability_logging_storage_account_tier                      = "Standard"
+observability_logging_storage_replication_type                  = "LRS"
+observability_logging_storage_account_kind                      = "StorageV2"
+observability_logging_storage_access_tier                       = "Hot"
+observability_logging_storage_public_network_access_enabled     = false
+observability_logging_storage_min_tls_version                   = "TLS1_2"
+observability_logging_storage_infrastructure_encryption_enabled = true # No additional cost; ForceNew - set at creation only
+observability_logging_storage_versioning_enabled                = true
+observability_logging_storage_blob_retention_days               = 7
+observability_logging_storage_container_retention_days          = 7
+observability_logging_storage_dev_team_spn_object_id            = "00000000-0000-0000-0000-000000000000"
+observability_logging_storage_blob_reader_principal_ids         = ["00000000-0000-0000-0000-000000000000"]
+observability_logging_storage_create_blob_endpoint              = true
+observability_logging_storage_enable_diagnostic_settings        = true
+observability_logging_storage_encryption_enabled                = true # CMK via keyvault_initial_keys["cmk-key"] above
+observability_logging_storage_subnet_name                       = "snet-stfs-dpn-uks-01"
 
 # ========================================
 # Tags

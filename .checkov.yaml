@@ -14,10 +14,14 @@
 #
 #   (default)    → All other HIGH/CRITICAL findings block the pipeline.
 #
-# Re-run `checkov -d dpn-azure-infrastructure --var-file
-# environments/terraform.tfvars --config-file .checkov.yaml` after changing
-# terraform.tfvars - findings depend on the actual configured values, not
-# just each variable's declared default.
+# Re-run, from the repository root, `checkov -d dpn-azure-infrastructure
+# --var-file dpn-azure-infrastructure/environments/dpn_infrastructure.tfvars
+# --config-file .checkov.yaml` after changing dpn_infrastructure.tfvars -
+# findings depend on the actual configured values, not just each variable's
+# declared default. --var-file resolves relative to the current working
+# directory, not to -d, so dropping the "dpn-azure-infrastructure/" prefix
+# silently fails to load the tfvars file and produces different (wrong)
+# findings with no error other than a parsing_errors entry in JSON output.
 # ==============================================================================
 
 # Run against Terraform HCL and Bicep only (not ARM, CloudFormation etc.)
@@ -54,6 +58,24 @@ skip-check:
   - CKV_AZURE_132  # Cosmos DB privileged escalation — N/A, no azurerm_cosmosdb_account in this codebase
   - CKV_AZURE_97   # VMSS encryption at host — N/A, no VM scale set resource declared directly
 
+  # ── Security contact email (subscription-level) ───────────────────────────
+  # Targets azurerm_security_center_contact - a subscription-wide resource,
+  # not something a per-workload Terraform module should own (one tenant may
+  # deploy this module many times; only one security contact should exist per
+  # subscription). Confirmed via `checkov --list` against the installed
+  # version this check has no relation to ACR/CMK - a previous version of
+  # this file mis-described it as an ACR customer-managed-key check.
+  - CKV_AZURE_131  # Security contact email not set — subscription-level resource, out of scope for this module
+
+  # ── VNet local DNS addresses ───────────────────────────────────────────────
+  # Targets azurerm_virtual_network (dns_servers). This codebase never
+  # creates a managed VNet - modules/networking/data.tf reads an existing
+  # landing-zone VNet via a data source only (see root README's "landing-zone
+  # assumptions"). No matching managed resource exists for this check to
+  # evaluate. A previous version of this file mis-described this ID as a
+  # subnet/VNet address-space ForceNew constraint.
+  - CKV_AZURE_183  # VNet local DNS addresses — N/A, VNet is a data source in this codebase, never a managed resource
+
   # ── ACR: Docker Content Trust ────────────────────────────────────────────────
   # Confirmed via `tofu validate`: the `trust_policy` block on
   # azurerm_container_registry is rejected by the current azurerm provider
@@ -83,9 +105,15 @@ soft-fail-on:
   - CKV_AZURE_168  # AKS max_pods=50 — set via var.aks_max_pods default; Checkov doesn't resolve multi-level module variable defaults
   - CKV2_AZURE_30  # ACR webhook HTTPS — enforced by a variable validation block requiring https:// on every service_uri; Checkov can't see for_each-map constraints
 
-  # ── Customer-managed keys (CMK) ───────────────────────────────────────────
-  - CKV2_AZURE_18   # UNVERIFIED ID — intent: storage infrastructure double encryption, accepted for dev/test
-  - CKV_AZURE_131   # UNVERIFIED ID — no matching ACR-CMK check found in current Checkov source; confirm against next real scan
+  # NOTE: CKV2_AZURE_18 (previously listed here with intent "storage
+  # infrastructure double encryption") was removed - confirmed via
+  # `checkov --list` against the installed 3.3.8 version that this ID does
+  # not exist in current Checkov, so soft-failing it was a no-op. The
+  # underlying security intent is now met directly: modules/storage defaults
+  # infrastructure_encryption_enabled to true (see Trivy AVD-AZU-0061 in
+  # .trivyignore for the equivalent, real check that covers this).
+  # CKV_AZURE_131 (previously misfiled here as an ACR-CMK check) has been
+  # moved to skip-check above with its correct meaning.
 
   # ── ACR: vulnerability scanning ─────────────────────────────────────────────
   # Requires Microsoft Defender for Containers registered at the subscription
@@ -123,16 +151,29 @@ soft-fail-on:
   - CKV_AZURE_193   # Event Grid public network access enabled — required for Defender for Storage event delivery
 
   # ── AKS monitoring ─────────────────────────────────────────────────────────
-  - CKV_AZURE_172   # AKS Secrets Store CSI Driver autorotation not enabled — diagnostic settings used instead
+  # RESOLVED - aks_secret_rotation_enabled defaults to true in
+  # dpn_infrastructure.tfvars, wired to key_vault_secrets_provider/
+  # secret_rotation_enabled. Does not currently appear as a Checkov failure;
+  # kept soft-failed as a safety net against a future tfvars regression.
+  - CKV_AZURE_172   # AKS Secrets Store CSI Driver autorotation — already enabled via aks_secret_rotation_enabled, kept as safety net
 
   # ── AKS Defender ───────────────────────────────────────────────────────────
   - CKV_AZURE_85    # AKS Defender profile not enabled — accepted for dev/test
 
   # ── Key Vault: network access ───────────────────────────────────────────────
-  - CKV_AZURE_189   # Key Vault public network access not disabled — accepted for dev/test; enforce false in prd
+  # RESOLVED - keyvault_public_network_access_enabled defaults to false in
+  # dpn_infrastructure.tfvars. Does not currently appear as a Checkov
+  # failure; kept soft-failed as a safety net against a future tfvars
+  # regression (e.g. an environment that sets this true for initial setup
+  # access and forgets to lock it back down).
+  - CKV_AZURE_189   # Key Vault public network access — already disabled by default, kept as safety net
 
   # ── Key Vault: firewall rules ────────────────────────────────────────────────
-  - CKV_AZURE_109   # Key Vault firewall rules not explicitly configured — accepted for dev/test
+  # RESOLVED - keyvault_network_acls_enabled defaults to true with
+  # network_acls_default_action = "Deny" in dpn_infrastructure.tfvars. Does
+  # not currently appear as a Checkov failure; kept soft-failed as a safety
+  # net against a future tfvars regression.
+  - CKV_AZURE_109   # Key Vault firewall rules — already configured (default_action=Deny) by default, kept as safety net
 
   # ── AKS: network policy ──────────────────────────────────────────────────────
   - CKV_AZURE_7     # AKS network policy — configured via network_policy variable
@@ -143,7 +184,12 @@ soft-fail-on:
   - CKV_AZURE_141   # AKS local admin account — already disabled in all envs, kept as safety net
 
   # ── Service Bus: managed identity ───────────────────────────────────────────
-  - CKV_AZURE_202   # Service Bus managed identity not configured — accepted for dev/test
+  # RESOLVED - service_bus_encryption_enabled defaults to true in
+  # dpn_infrastructure.tfvars, which wires a UserAssigned identity block onto
+  # the namespace (required for CMK). Does not currently appear as a Checkov
+  # failure; kept soft-failed as a safety net against a future tfvars
+  # regression (e.g. CMK turned off without re-checking this).
+  - CKV_AZURE_202   # Service Bus managed identity — already configured via the CMK identity, kept as safety net
 
   # ── Key Vault: HSM-backed keys ──────────────────────────────────────────────
   # HSM-backed keys (RSA-HSM/EC-HSM) require Key Vault Premium SKU - a real
@@ -167,12 +213,15 @@ soft-fail-on:
   # ── AKS: private cluster (ForceNew) ──────────────────────────────────────────
   - CKV_AZURE_115   # AKS must be a private cluster — ForceNew, already true in all envs
 
-  # ── VM: trusted launch — vTPM (ForceNew) ─────────────────────────────────────
-  - CKV2_AZURE_93   # UNVERIFIED ID — intent: VM vTPM enabled (ForceNew), already enabled in all envs
-
-  # ── Key Vault: soft-delete retention (one-way — cannot reduce once set) ───────
-  - CKV2_AZURE_128  # UNVERIFIED ID — intent: Key Vault soft-delete retention >= 90 days, review per environment
-
-  # ── Subnet / VNet address space (ForceNew) ────────────────────────────────────
-  # Changes to subnet address_prefix or VNet address_space are ForceNew.
-  - CKV_AZURE_183   # UNVERIFIED ID — intent: VNet/subnet address-space constraint, ForceNew, infrastructure constraint
+  # NOTE: CKV2_AZURE_93 ("VM vTPM enabled") and CKV2_AZURE_128 ("Key Vault
+  # soft-delete retention") were removed from this section - confirmed via
+  # `checkov --list` against the installed 3.3.8 version that neither ID
+  # exists in current Checkov, so soft-failing them was a no-op. The
+  # underlying security intent for both is independently confirmed met:
+  # vm_vtpm_enabled / vm_secure_boot_enabled default to true in
+  # dpn_infrastructure.tfvars (modules/vm), and
+  # keyvault_soft_delete_retention_days defaults to 90 with
+  # keyvault_purge_protection_enabled = true. CKV_AZURE_183 ("VNet/subnet
+  # address-space ForceNew") was also removed from here - it was a
+  # misidentification of what that check ID actually verifies; see the
+  # correctly-described CKV_AZURE_183 entry under skip-check above.

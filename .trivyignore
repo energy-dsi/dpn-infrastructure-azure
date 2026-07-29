@@ -6,31 +6,41 @@
 #
 # Format: one AVD ID or check ID per line; comments start with #
 #
-# Only entries confirmed to actually fire against this codebase (verified via
-# `trivy fs dpn-azure-infrastructure --scanners misconfig --tf-vars
-# environments/dpn_infrastructure.tfvars --format json`) are listed below.
 # Trivy's resource-attribute checks generally can't flag "this resource type
 # is entirely missing" (e.g. no azurerm_security_center_subscription_pricing
 # resource for Defender for Cloud enrollment) - only misconfigured attributes
 # on resources that exist. For the fuller picture of accepted-risk items,
 # including ones Trivy's rule set doesn't independently catch, see
 # .checkov.yaml, which documents each with its rationale.
+#
+# KNOWN SCAN LIMITATION - verify with isolated module scans, not just the
+# full-repo scan: `trivy fs dpn-azure-infrastructure --scanners misconfig
+# --tf-vars dpn-azure-infrastructure/environments/dpn_infrastructure.tfvars`
+# silently returns zero findings AND zero passes for AVD-AZU-0058 and
+# AVD-AZU-0061 specifically - neither check appears in the output at all,
+# passing or failing, when the full module graph (root + all 12 child
+# modules, with their cross-module output references such as
+# module.networking.subnet_ids[...] and conditional CMK key IDs) is
+# evaluated together. Confirmed via `trivy fs modules/storage --scanners
+# misconfig --include-non-failures` (the storage module scanned on its own,
+# with only its own variable defaults) that both checks evaluate correctly
+# in isolation - this is a Trivy resolution limitation with this codebase's
+# inter-module dependency depth, not a real absence of findings. Re-verify
+# with the isolated-module command above after any change to the storage
+# module, rather than trusting a clean full-repo `trivy fs` run alone.
 # ==============================================================================
 
 # ── Storage account geo-redundancy ────────────────────────────────────────────
 # dev_storage / file_scanning_storage / observability_logging_storage use
 # locally-redundant storage (LRS) to reduce cost in dev/test tier. Must be
 # upgraded to GRS/RAGRS before pre-prod / production, where regional-outage
-# durability matters.
+# durability matters. Confirmed still LRS in dpn_infrastructure.tfvars and
+# confirmed the check still correctly FAILs against it via the isolated
+# module scan (see limitation note above).
 AVD-AZU-0058
 
-# ── Storage account infrastructure encryption ─────────────────────────────────
-# Double encryption at the infrastructure level (infrastructure_encryption_enabled)
-# is not enabled. This is separate from customer-managed key (CMK) encryption,
-# which this codebase does support (see each module's "Customer-Managed Key"
-# section) - infrastructure encryption is an additional platform-level layer
-# on top. It is ForceNew on azurerm_storage_account - enabling it on an
-# already-deployed account destroys and recreates it, so it must be set at
-# initial creation for any new pre-prod / production storage account, not
-# retrofitted here.
-AVD-AZU-0061
+# AVD-AZU-0061 (storage infrastructure encryption) is no longer listed here:
+# modules/storage now defaults infrastructure_encryption_enabled to true (no
+# additional Azure cost, safe for any new deployment since it's only
+# ForceNew on an *existing* account). Confirmed PASS via the isolated module
+# scan (see limitation note above).

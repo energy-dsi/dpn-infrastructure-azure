@@ -158,7 +158,7 @@ variable "initial_keys" {
     key_type                      = string
     key_size                      = number
     key_opts                      = list(string)
-    expiration_date                = optional(string)
+    expiration_date               = optional(string)
     enable_rotation               = optional(bool, true)
     rotation_time_before_expiry   = optional(string, "P30D")
     rotation_expire_after         = optional(string, "P90D")

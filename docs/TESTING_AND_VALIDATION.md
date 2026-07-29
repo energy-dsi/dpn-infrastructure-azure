@@ -17,7 +17,7 @@ What *is* possible, and has been done, is exhaustive static validation - everyth
 | Every required variable (no default) has a value in the example tfvars | Custom script comparing `variables.tf` against `dpn_infrastructure.tfvars` | 146/147 present - the 147th (`vm_admin_password`) is deliberately excluded (sensitive, supplied by the pipeline, never committed) |
 | Deeper static lint (deprecated syntax, structural issues) across root + every module + bootstrap | `tflint` | Zero findings |
 | Infrastructure misconfiguration scan, with the actual tfvars values applied | `trivy` (`--scanners misconfig`) | Zero findings |
-| Compliance-mapped security scan | `checkov` | 79 passed, 14 documented exceptions (0 blocking) - see `.checkov.yaml` for the rationale behind every exception |
+| Compliance-mapped security scan | `checkov` | 78 passed, 15 documented exceptions across 126 resources (0 blocking) - see `.checkov.yaml` for the rationale behind every exception |
 | GitHub Actions workflow schema/semantics | `actionlint` | Zero findings across all 4 workflow files |
 | YAML syntax, all pipeline files (GitHub + Azure DevOps) | PyYAML | All parse cleanly |
 

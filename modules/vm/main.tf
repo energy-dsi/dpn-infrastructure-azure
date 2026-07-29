@@ -42,10 +42,10 @@ resource "azurerm_network_interface_security_group_association" "vm" {
 
 # Windows Virtual Machine
 resource "azurerm_windows_virtual_machine" "vm" {
-  name                = var.vm_name
-  computer_name       = var.computer_name
-  location            = azurerm_resource_group.vm.location
-  resource_group_name = azurerm_resource_group.vm.name
+  name                       = var.vm_name
+  computer_name              = var.computer_name
+  location                   = azurerm_resource_group.vm.location
+  resource_group_name        = azurerm_resource_group.vm.name
   size                       = var.vm_size
   admin_username             = var.admin_username
   admin_password             = var.admin_password

@@ -37,12 +37,14 @@ Before promoting any environment beyond dev/test, review `.checkov.yaml` in full
 
 This repository ships (but does not automatically run) config for three open-source scanners - install them yourself and point them at these configs:
 
+Run these from the repository root - `--var-file`/`--tf-vars` resolve relative to your current directory, not to the scanned directory, so dropping the `dpn-azure-infrastructure/` prefix silently loads the wrong (or no) tfvars file:
+
 ```bash
 # Compliance-mapped security scan
-checkov -d dpn-azure-infrastructure --framework terraform --config-file .checkov.yaml --var-file environments/dpn_infrastructure.tfvars --compact
+checkov -d dpn-azure-infrastructure --framework terraform --config-file .checkov.yaml --var-file dpn-azure-infrastructure/environments/dpn_infrastructure.tfvars --compact
 
 # Infrastructure misconfiguration scan
-trivy fs dpn-azure-infrastructure --scanners misconfig --tf-vars environments/dpn_infrastructure.tfvars --ignorefile .trivyignore
+trivy fs dpn-azure-infrastructure --scanners misconfig --tf-vars dpn-azure-infrastructure/environments/dpn_infrastructure.tfvars --ignorefile .trivyignore
 
 # Terraform-specific static analysis
 tflint --config .tflint.hcl --recursive --chdir dpn-azure-infrastructure

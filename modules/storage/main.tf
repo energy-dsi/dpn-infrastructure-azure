@@ -9,22 +9,23 @@ resource "azurerm_resource_group" "storage" {
 }
 
 resource "azurerm_storage_account" "storage" {
-  name                            = var.storage_account_name
-  resource_group_name             = azurerm_resource_group.storage.name
-  location                        = var.location
-  account_tier                    = var.account_tier
-  account_replication_type        = var.replication_type
-  account_kind                    = var.account_kind
-  access_tier                     = var.access_tier
-  public_network_access_enabled   = var.public_network_access_enabled
-  allow_nested_items_to_be_public = var.allow_nested_items_to_be_public
-  min_tls_version                 = var.min_tls_version
-  https_traffic_only_enabled      = var.enable_https_traffic_only
-  shared_access_key_enabled       = var.shared_access_key_enabled
-  local_user_enabled              = false # CKV_AZURE_244: local users/SFTP not used; access is via AAD/RBAC role assignments only
-  is_hns_enabled                  = var.is_hns_enabled
-  large_file_share_enabled        = var.large_file_share_enabled
-  tags                            = var.tags
+  name                              = var.storage_account_name
+  resource_group_name               = azurerm_resource_group.storage.name
+  location                          = var.location
+  account_tier                      = var.account_tier
+  account_replication_type          = var.replication_type
+  account_kind                      = var.account_kind
+  access_tier                       = var.access_tier
+  public_network_access_enabled     = var.public_network_access_enabled
+  allow_nested_items_to_be_public   = var.allow_nested_items_to_be_public
+  min_tls_version                   = var.min_tls_version
+  infrastructure_encryption_enabled = var.infrastructure_encryption_enabled
+  https_traffic_only_enabled        = var.enable_https_traffic_only
+  shared_access_key_enabled         = var.shared_access_key_enabled
+  local_user_enabled                = false # CKV_AZURE_244: local users/SFTP not used; access is via AAD/RBAC role assignments only
+  is_hns_enabled                    = var.is_hns_enabled
+  large_file_share_enabled          = var.large_file_share_enabled
+  tags                              = var.tags
 
   blob_properties {
     versioning_enabled = var.versioning_enabled

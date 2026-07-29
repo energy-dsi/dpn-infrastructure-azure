@@ -61,6 +61,12 @@ variable "min_tls_version" {
   default     = "TLS1_2"
 }
 
+variable "infrastructure_encryption_enabled" {
+  description = "Enable infrastructure (double) encryption at rest, an additional encryption layer below the platform-managed/CMK encryption layer. No additional Azure cost. ForceNew - can only be set at account creation, not toggled on an existing storage account."
+  type        = bool
+  default     = true
+}
+
 variable "enable_https_traffic_only" {
   description = "Enable HTTPS traffic only"
   type        = bool
