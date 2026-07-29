@@ -61,18 +61,13 @@ variables:
   TFVARS_FILE: 'environments/dpn_infrastructure.tfvars'
   REPORTS_DIR: '$(Agent.TempDirectory)/quality-reports-$(Build.BuildId)'
 
-# Microsoft-hosted agent - none of these three scanners need private network
-# line-of-sight (unlike deploy-dpn.yml, which needs the self-hosted pool to
-# reach the tfstate storage private endpoint). Azure DevOps does not allow a
-# template expression to pick between a Microsoft-hosted vmImage and a named
-# self-hosted pool within one pool: block, so this is a plain hardcoded
-# value rather than a parameter, matching how simple this pipeline's
-# requirements actually are. To run on the same self-hosted runners as the
-# deploy pipelines instead, replace the two lines below with:
-#   pool:
-#     name: 'self-hosted-pool'
+# This ADO project has no Microsoft-hosted agent pool available (vmImage
+# fails with "No pool was specified"), so this runs on the same self-hosted
+# pool as the deploy pipelines. None of these three scanners actually need
+# private network line-of-sight - self-hosted is used here only because
+# it's the pool that exists, not because the job requires it.
 pool:
-  vmImage: 'ubuntu-latest'
+  name: 'ADO-Linux-Prd-UKS-AgentPool'
 
 stages:
   - stage: Scan
