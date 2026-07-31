@@ -101,3 +101,40 @@ If your workload doesn't need file scanning, you can remove the `event_grid`, `s
 **Assumes a landing zone already exists.** This codebase assumes you already have: an existing VNet with free address space, centrally-managed private DNS zones, and a self-hosted CI/CD runner with network access to that VNet (see [docs/PREREQUISITES.md](docs/PREREQUISITES.md)). It does not stand up a landing zone from nothing, and it has not been tested against every possible Azure tenant/subscription configuration - e.g. it assumes your chosen region supports Availability Zones, since AKS/ACR zone redundancy depend on that.
 
 See [docs/SECURITY_AND_COMPLIANCE.md](docs/SECURITY_AND_COMPLIANCE.md) for the equivalent disclaimer specific to compliance/CIS/NIST claims.
+
+## Public Funding Acknowledgment
+
+This repository has been developed with public funding as part of the Data Sharing Infrastructure (DSI), a UK Government initiative. DSI, alongside its partners, has invested in this work to advance open, secure, and reusable digital twin technologies for any organisation, whether from the public or private sector, irrespective of size.
+
+## License
+
+This repository contains both source code and documentation, which are covered by different licenses:
+
+- **Code:** Licensed under the [Apache License 2.0](./LICENSE.md).
+- **Documentation:** Licensed under the [Open Government Licence v3.0 (OGL-UK-3.0)](./OGL_LICENSE.md).
+
+By contributing to this repository, you agree that your contributions will be licenced under these terms.
+
+## Security and Responsible Disclosure
+
+We take security seriously. If you believe you have found a security vulnerability in this repository, please follow our responsible disclosure process outlined in [SECURITY.md](./SECURITY.md).
+
+## Contributing
+
+We welcome contributions that align with the Programme's objectives.
+
+## Acknowledgements
+
+This repository has benefited from collaboration with various organisations.
+
+## Support and Contact
+
+"For questions or support, check our Issues or contact the DSI team on dsi@neso.energy"
+
+## Maintained by the National Energy System Operator (NESO)
+
+Copyright 2026 NESO and the Crown.  This work is licensed under the Open Government Licence 3.0 (OGL). This work has been developed by NESO using content licensed by the Department for Business and Trade (UK) under the OGL.   
+ 
+Licensed under the Open Government Licence v3.0.
+
+For full licensing terms, [OGL_LICENSE.md](./OGL_LICENSE.md)
