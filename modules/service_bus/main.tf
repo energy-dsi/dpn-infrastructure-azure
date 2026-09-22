@@ -20,8 +20,22 @@ resource "azurerm_servicebus_namespace" "service_bus" {
   local_auth_enabled            = var.local_auth_enabled
   tags                          = var.tags
 
-  identity {
-    type = "SystemAssigned"
+  dynamic "identity" {
+    for_each = [1]
+    content {
+      type         = var.encryption_enabled ? "SystemAssigned, UserAssigned" : "SystemAssigned"
+      identity_ids = var.encryption_enabled ? [azurerm_user_assigned_identity.service_bus_cmk[0].id] : null
+    }
+  }
+
+  dynamic "customer_managed_key" {
+    # CMK requires Premium SKU (azurerm/Azure platform requirement).
+    for_each = var.encryption_enabled && var.sku == "Premium" && var.key_vault_key_id != null ? [1] : []
+    content {
+      key_vault_key_id                  = var.key_vault_key_id
+      identity_id                       = azurerm_user_assigned_identity.service_bus_cmk[0].id
+      infrastructure_encryption_enabled = true
+    }
   }
 
   dynamic "network_rule_set" {
@@ -38,7 +52,28 @@ resource "azurerm_servicebus_namespace" "service_bus" {
     ignore_changes = [tags]
   }
 
-  depends_on = [azurerm_resource_group.service_bus]
+  depends_on = [azurerm_resource_group.service_bus, azurerm_role_assignment.service_bus_cmk]
+}
+
+# ------------------------------------------------------------------------------
+# Customer-managed key support (Premium SKU only)
+# ------------------------------------------------------------------------------
+resource "azurerm_user_assigned_identity" "service_bus_cmk" {
+  count               = var.encryption_enabled ? 1 : 0
+  name                = "${var.namespace_name}-cmk"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.service_bus.name
+  tags                = var.tags
+}
+
+# Grants the namespace encryption identity permission to wrap/unwrap the CMK.
+# Without this, enabling encryption_enabled fails at apply time with 403 when
+# Service Bus tries to use the key.
+resource "azurerm_role_assignment" "service_bus_cmk" {
+  count                = var.encryption_enabled && var.key_vault_id != null ? 1 : 0
+  scope                = var.key_vault_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.service_bus_cmk[0].principal_id
 }
 
 resource "azurerm_servicebus_queue" "queues" {

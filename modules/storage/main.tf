@@ -31,6 +31,22 @@ resource "azurerm_storage_account" "storage" {
   large_file_share_enabled          = var.large_file_share_enabled
   tags                              = var.tags
 
+  dynamic "identity" {
+    for_each = var.encryption_enabled ? [1] : []
+    content {
+      type         = "UserAssigned"
+      identity_ids = [azurerm_user_assigned_identity.storage_cmk[0].id]
+    }
+  }
+
+  dynamic "customer_managed_key" {
+    for_each = var.encryption_enabled && var.key_vault_key_id != null ? [1] : []
+    content {
+      key_vault_key_id          = var.key_vault_key_id
+      user_assigned_identity_id = azurerm_user_assigned_identity.storage_cmk[0].id
+    }
+  }
+
   blob_properties {
     versioning_enabled = var.versioning_enabled
 
@@ -61,6 +77,29 @@ resource "azurerm_storage_account" "storage" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [azurerm_role_assignment.storage_cmk]
+}
+
+# ------------------------------------------------------------------------------
+# Customer-managed key support
+# ------------------------------------------------------------------------------
+resource "azurerm_user_assigned_identity" "storage_cmk" {
+  count               = var.encryption_enabled ? 1 : 0
+  name                = "${var.storage_account_name}-cmk"
+  location            = var.location
+  resource_group_name = azurerm_resource_group.storage.name
+  tags                = var.tags
+}
+
+# Grants the storage encryption identity permission to wrap/unwrap the CMK.
+# Without this, enabling encryption_enabled fails at apply time with 403 when
+# Storage tries to use the key.
+resource "azurerm_role_assignment" "storage_cmk" {
+  count                = var.encryption_enabled && var.key_vault_id != null ? 1 : 0
+  scope                = var.key_vault_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.storage_cmk[0].principal_id
 }
 
 resource "azurerm_storage_share" "file_share" {

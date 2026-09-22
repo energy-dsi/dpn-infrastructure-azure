@@ -235,6 +235,18 @@ variable "log_analytics_workspace_id" {
 # Key Vault Variables
 # ========================================
 
+variable "encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for the OS disk via a disk encryption set"
+  type        = bool
+  default     = false
+}
+
+variable "key_vault_key_id" {
+  description = "Key Vault key ID for OS disk customer-managed encryption. Required when encryption_enabled is true."
+  type        = string
+  default     = null
+}
+
 variable "key_vault_id" {
   description = "ID of the Key Vault to store VM password"
   type        = string

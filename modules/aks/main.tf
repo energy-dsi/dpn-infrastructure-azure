@@ -83,6 +83,41 @@ resource "time_sleep" "wait_for_rbac_propagation" {
 }
 
 # ------------------------------------------------------------------------------
+# Customer-managed key support: node OS disks (via Disk Encryption Set) and
+# etcd / Kubernetes Secrets (via the key_management_service block below).
+# ------------------------------------------------------------------------------
+resource "azurerm_disk_encryption_set" "aks" {
+  count               = var.encryption_enabled ? 1 : 0
+  name                = "${var.aks_name}-des"
+  resource_group_name = azurerm_resource_group.aks.name
+  location            = var.location
+  key_vault_key_id    = var.key_vault_key_id
+  tags                = var.tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+# Grants the disk encryption set's identity permission to wrap/unwrap the CMK
+# used for node OS disks.
+resource "azurerm_role_assignment" "aks_des_cmk" {
+  count                = var.encryption_enabled ? 1 : 0
+  scope                = var.key_vault_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_disk_encryption_set.aks[0].identity[0].principal_id
+}
+
+# Grants the AKS cluster identity permission to wrap/unwrap the CMK used for
+# etcd / Kubernetes Secrets encryption (key_management_service block below).
+resource "azurerm_role_assignment" "aks_cluster_identity_cmk" {
+  count                = var.encryption_enabled ? 1 : 0
+  scope                = var.key_vault_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.aks.principal_id
+}
+
+# ------------------------------------------------------------------------------
 # AKS Cluster
 # ------------------------------------------------------------------------------
 resource "azurerm_kubernetes_cluster" "aks" {
@@ -101,6 +136,8 @@ resource "azurerm_kubernetes_cluster" "aks" {
   sku_tier                  = var.sku_tier
   automatic_upgrade_channel = var.automatic_upgrade_channel
   node_os_upgrade_channel   = var.node_os_upgrade_channel
+  # Customer-managed key for node OS disks (ForceNew - set at cluster creation only)
+  disk_encryption_set_id = var.encryption_enabled ? azurerm_disk_encryption_set.aks[0].id : null
 
   # Enable Istio service mesh
   service_mesh_profile {
@@ -141,6 +178,15 @@ resource "azurerm_kubernetes_cluster" "aks" {
     }
   }
 
+  # Customer-managed key for etcd / Kubernetes Secrets encryption
+  dynamic "key_management_service" {
+    for_each = var.encryption_enabled ? [1] : []
+    content {
+      key_vault_key_id         = var.key_vault_key_id
+      key_vault_network_access = var.key_vault_network_access
+    }
+  }
+
   # Azure AD RBAC configuration
   azure_active_directory_role_based_access_control {
     admin_group_object_ids = var.aks_admin_group
@@ -171,7 +217,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
   tags = var.tags
 
   depends_on = [
-    time_sleep.wait_for_rbac_propagation
+    time_sleep.wait_for_rbac_propagation,
+    azurerm_role_assignment.aks_des_cmk,
+    azurerm_role_assignment.aks_cluster_identity_cmk,
   ]
 
   lifecycle {

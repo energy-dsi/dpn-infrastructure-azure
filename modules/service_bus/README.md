@@ -103,10 +103,11 @@ module "service_bus" {
 
 ## Customer-Managed Key (CMK) Encryption
 
-Not supported by this module - there is no `encryption_enabled`/`key_vault_key_id` input, and the namespace resource always uses a Microsoft-managed key. Add a `customer_managed_key` block to `main.tf` yourself if you need this (Premium SKU required by Azure).
+Set `encryption_enabled = true` plus `key_vault_key_id` and `key_vault_id` to encrypt this namespace with your own Key Vault key instead of a Microsoft-managed one. Requires `sku = "Premium"` (Azure platform requirement) - the module creates its own user-assigned identity and grants it `Key Vault Crypto Service Encryption User` on `key_vault_id`.
 
 ## Notes
 
+- The namespace's `identity` block is now a `dynamic` block: `SystemAssigned` alone normally, `"SystemAssigned, UserAssigned"` (with the CMK identity attached) when `encryption_enabled = true`.
 - This module creates its own resource group, and both the resource group and namespace have `prevent_destroy = true` - to actually destroy this namespace, remove that lifecycle block first.
 - The `network_rule_set` block is only present when `trusted_services_allowed = true`; leaving it at the default `false` means no network rule set is configured at all, and public access is governed solely by `public_network_access_enabled`.
 - There is no `private_dns_zone_id` input. The private endpoint's `private_dns_zone_group` is excluded from lifecycle management (`ignore_changes`), so DNS registration for `privatelink.servicebus.windows.net` must be linked outside this module.

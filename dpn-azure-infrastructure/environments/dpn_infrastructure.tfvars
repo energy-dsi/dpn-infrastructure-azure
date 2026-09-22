@@ -175,7 +175,25 @@ keyvault_admin_object_ids                = []
 keyvault_secrets_officer_object_ids      = ["00000000-0000-0000-0000-000000000000"] # Pipeline SPN object ID (VM password storage)
 keyvault_secrets_user_object_ids         = ["00000000-0000-0000-0000-000000000000"] # Dev team SPN object ID
 keyvault_initial_secrets                 = {}
-keyvault_initial_keys                    = {}
+# Shared customer-managed key (CMK) used to encrypt every resource below that
+# supports it (ACR, AKS node disks + etcd/Secrets, Service Bus, VM OS disk, and
+# the three storage accounts). Split into separate per-resource keys instead if
+# your compliance framework requires key isolation.
+keyvault_initial_keys = {
+  "cmk-key" = {
+    key_type = "RSA"
+    key_size = 3072
+    key_opts = ["wrapKey", "unwrapKey", "encrypt", "decrypt", "sign", "verify"]
+    # Required by this root variable's type, but the keyvault module itself has no
+    # enable_rotation field - it's silently dropped on conversion into the module
+    # call, and rotation_* below governs the keyvault module's rotation policy
+    # regardless of this value.
+    enable_rotation               = true
+    rotation_time_before_expiry   = "P30D"
+    rotation_expire_after         = "P90D"
+    rotation_notify_before_expiry = "P29D"
+  }
+}
 
 # Self-signed Notation signing certificate for AKS image signature verification (Ratify)
 keyvault_initial_certificates = {
@@ -206,8 +224,7 @@ acr_allowed_ip_ranges             = []
 acr_retention_policy_enabled      = true
 acr_retention_policy_days         = 7
 acr_trust_policy_enabled          = false
-acr_encryption_enabled            = false
-acr_key_vault_key_id              = ""
+acr_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
 acr_create_scope_maps             = false
 acr_webhooks                      = {}
 acr_georeplications               = {}
@@ -270,6 +287,9 @@ aks_service_mesh_revisions = ["asm-1-27"]
 aks_identity_type = "UserAssigned"
 # HTTP application routing (deprecated, disabled)
 aks_http_application_routing_enabled = false
+# CMK for node OS disks + etcd/Secrets, via keyvault_initial_keys["cmk-key"] above.
+# ForceNew: only takes effect at cluster creation.
+aks_encryption_enabled = true
 # Node pool zones (spread the node pool across all 3 UK South availability zones.
 # Changing this on an existing node pool forces the pool to be recreated)
 aks_node_pool_zones = ["1", "2", "3"]
@@ -310,6 +330,7 @@ dev_storage_container_retention_days      = 7
 dev_team_spn_object_id                    = "00000000-0000-0000-0000-000000000000"
 dev_storage_create_blob_endpoint          = true
 dev_storage_enable_diagnostic_settings    = true
+dev_storage_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
 
 # Optional: managed identities of other clusters that need AcrPull on this ACR
 aks_external_acr_pull_principal_ids = [] # No external ACR pull principals needed
@@ -356,6 +377,7 @@ vm_license_type                         = "None"
 vm_timezone                             = "GMT Standard Time"
 vm_availability_zone                    = null
 vm_enable_diagnostic_settings           = true
+vm_encryption_enabled                   = true # CMK via keyvault_initial_keys["cmk-key"] above
 
 # ========================================
 # Azure Bastion (optional - see the comment on bastion_enabled in variables.tf)
@@ -400,6 +422,7 @@ service_bus_public_network_access_enabled = false
 service_bus_local_auth_enabled            = false
 service_bus_minimum_tls_version           = "1.2"
 service_bus_enable_diagnostic_settings    = true
+service_bus_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above (Premium SKU only)
 
 # 00000000-0000-0000-0000-000000000000 = Data Receiver SPN (Azure Service Bus Data Receiver)
 # 00000000-0000-0000-0000-000000000000 = Data Sender SPN (Azure Service Bus Data Sender)
@@ -430,6 +453,7 @@ file_scanning_service_storage_file_share_name               = ""
 file_scanning_service_storage_file_share_quota_gb           = 1
 file_scanning_service_storage_create_file_endpoint          = false
 file_scanning_service_storage_enable_diagnostic_settings    = true
+file_scanning_service_storage_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
 
 # 00000000-0000-0000-0000-000000000000 = Data Receiver SPN (Storage Blob Data Reader)
 # 00000000-0000-0000-0000-000000000000 = Default/team SPN (Storage Blob Data Contributor)
@@ -455,6 +479,7 @@ observability_logging_storage_file_share_name               = ""
 observability_logging_storage_file_share_quota_gb           = 1
 observability_logging_storage_create_file_endpoint          = false
 observability_logging_storage_enable_diagnostic_settings    = true
+observability_logging_storage_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
 observability_logging_storage_subnet_name                   = "snet-stfs-dpn-uks-01"
 
 observability_logging_storage_data_receiver_principal_ids    = []

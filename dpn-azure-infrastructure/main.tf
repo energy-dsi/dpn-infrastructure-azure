@@ -120,7 +120,8 @@ module "container_registry" {
   retention_policy_days             = var.acr_retention_policy_days
   trust_policy_enabled              = var.acr_trust_policy_enabled
   encryption_enabled                = var.acr_encryption_enabled
-  key_vault_key_id                  = var.acr_key_vault_key_id
+  key_vault_key_id                  = var.acr_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
+  key_vault_id                      = var.acr_encryption_enabled ? module.keyvault.keyvault_id : null
   create_scope_maps                 = var.acr_create_scope_maps
   webhooks                          = var.acr_webhooks
   georeplications                   = var.acr_georeplications
@@ -207,6 +208,8 @@ module "aks" {
   host_encryption_enabled                    = var.aks_host_encryption_enabled
   azure_rbac_enabled                         = var.aks_azure_rbac_enabled
   key_vault_id                               = module.keyvault.keyvault_id
+  encryption_enabled                         = var.aks_encryption_enabled
+  key_vault_key_id                           = var.aks_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
   enable_diagnostic_settings                 = var.aks_enable_diagnostic_settings
   container_registry_id                      = module.container_registry.acr_id
   connectivity_subscription_id               = var.connectivity_subscription_id
@@ -256,6 +259,9 @@ module "dev_storage" {
   file_share_name                           = var.dev_storage_file_share_name
   file_share_quota_gb                       = var.dev_storage_file_share_quota_gb
   create_file_endpoint                      = var.dev_storage_create_file_endpoint
+  encryption_enabled                        = var.dev_storage_encryption_enabled
+  key_vault_key_id                          = var.dev_storage_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
+  key_vault_id                              = var.dev_storage_encryption_enabled ? module.keyvault.keyvault_id : null
   subnet_id                                 = module.networking.subnet_ids["devstorage"]
   private_dns_zone_resource_group           = var.private_dns_zone_resource_group
   connectivity_subscription_id              = var.connectivity_subscription_id
@@ -374,6 +380,8 @@ module "windows_vm" {
   enable_diagnostic_settings           = var.vm_enable_diagnostic_settings
   log_analytics_workspace_id           = var.vm_enable_diagnostic_settings ? module.loganalytics.log_analytics_workspace_id : null
   key_vault_id                         = module.keyvault.keyvault_id
+  encryption_enabled                   = var.vm_encryption_enabled
+  key_vault_key_id                     = var.vm_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
   tags                                 = var.tags
 
   depends_on = [module.networking, module.loganalytics, module.keyvault, time_sleep.wait_for_keyvault_rbac]
@@ -456,6 +464,9 @@ module "service_bus" {
   data_owner_principal_ids      = var.service_bus_data_owner_principal_ids
   enable_diagnostic_settings    = var.service_bus_enable_diagnostic_settings
   log_analytics_workspace_id    = module.loganalytics.log_analytics_workspace_id
+  encryption_enabled            = var.service_bus_encryption_enabled
+  key_vault_key_id              = var.service_bus_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
+  key_vault_id                  = var.service_bus_encryption_enabled ? module.keyvault.keyvault_id : null
   tags                          = var.tags
 
   depends_on = [module.networking, module.loganalytics]
@@ -484,6 +495,9 @@ module "file_scanning_service_storage" {
   file_share_name                 = var.file_scanning_service_storage_file_share_name
   file_share_quota_gb             = var.file_scanning_service_storage_file_share_quota_gb
   create_file_endpoint            = var.file_scanning_service_storage_create_file_endpoint
+  encryption_enabled              = var.file_scanning_service_storage_encryption_enabled
+  key_vault_key_id                = var.file_scanning_service_storage_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
+  key_vault_id                    = var.file_scanning_service_storage_encryption_enabled ? module.keyvault.keyvault_id : null
   subnet_id                       = module.networking.subnet_ids[var.file_scanning_service_storage_subnet_name]
   private_dns_zone_resource_group = var.private_dns_zone_resource_group
   connectivity_subscription_id    = var.connectivity_subscription_id
@@ -536,6 +550,9 @@ module "observability_logging_storage" {
   file_share_name                 = var.observability_logging_storage_file_share_name
   file_share_quota_gb             = var.observability_logging_storage_file_share_quota_gb
   create_file_endpoint            = var.observability_logging_storage_create_file_endpoint
+  encryption_enabled              = var.observability_logging_storage_encryption_enabled
+  key_vault_key_id                = var.observability_logging_storage_encryption_enabled ? module.keyvault.key_ids["cmk-key"] : null
+  key_vault_id                    = var.observability_logging_storage_encryption_enabled ? module.keyvault.keyvault_id : null
   subnet_id                       = module.networking.subnet_ids[var.observability_logging_storage_subnet_name]
   private_dns_zone_resource_group = var.private_dns_zone_resource_group
   connectivity_subscription_id    = var.connectivity_subscription_id

@@ -46,6 +46,28 @@ variable "container_registry_id" {
   type        = string
 }
 
+variable "encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for node OS disks (via a disk encryption set) and etcd / Kubernetes Secrets (via the key_management_service block). ForceNew: only takes effect at cluster creation."
+  type        = bool
+  default     = false
+}
+
+variable "key_vault_key_id" {
+  description = "Key Vault key ID for customer-managed encryption of node OS disks and etcd/Secrets. Required when encryption_enabled is true."
+  type        = string
+  default     = null
+}
+
+variable "key_vault_network_access" {
+  description = "Network access mode the AKS control plane uses to reach key_vault_key_id for etcd/Secrets encryption: \"Private\" (via Private Link) or \"Public\"."
+  type        = string
+  default     = "Private"
+  validation {
+    condition     = contains(["Private", "Public"], var.key_vault_network_access)
+    error_message = "key_vault_network_access must be \"Private\" or \"Public\"."
+  }
+}
+
 variable "key_vault_id" {
   description = "Resource ID of the Key Vault for secrets management"
   type        = string

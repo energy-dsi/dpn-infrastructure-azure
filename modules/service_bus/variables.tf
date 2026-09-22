@@ -100,6 +100,24 @@ variable "log_analytics_workspace_id" {
   default     = null
 }
 
+variable "encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption. Requires sku = \"Premium\" (Azure platform requirement)."
+  type        = bool
+  default     = false
+}
+
+variable "key_vault_key_id" {
+  description = "Key Vault key ID for customer-managed encryption. Required when encryption_enabled is true."
+  type        = string
+  default     = null
+}
+
+variable "key_vault_id" {
+  description = "Resource ID of the Key Vault holding key_vault_key_id. Required when encryption_enabled is true - the module grants the namespace encryption identity Key Vault Crypto Service Encryption User on this vault so it can wrap/unwrap the CMK."
+  type        = string
+  default     = null
+}
+
 variable "tags" {
   description = "Tags to apply to resources"
   type        = map(string)

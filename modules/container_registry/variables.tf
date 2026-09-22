@@ -105,6 +105,12 @@ variable "key_vault_key_id" {
   description = "Key Vault key ID for customer-managed encryption"
 }
 
+variable "key_vault_id" {
+  type        = string
+  default     = null
+  description = "Resource ID of the Key Vault holding key_vault_key_id. Required when encryption_enabled is true - the module grants the ACR encryption identity Key Vault Crypto Service Encryption User on this vault so it can wrap/unwrap the CMK."
+}
+
 variable "georeplications" {
   type = map(object({
     location                = string

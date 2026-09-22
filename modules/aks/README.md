@@ -133,6 +133,10 @@ module "aks" {
 - `aks_oidc_issuer_url` - OIDC issuer URL for workload identity
 - `key_vault_secrets_provider_identity` - Key Vault CSI identity
 
+## Customer-Managed Key (CMK) Encryption
+
+Set `encryption_enabled = true` plus `key_vault_key_id` to encrypt node OS disks (via a disk encryption set) and etcd / Kubernetes Secrets (via the cluster's `key_management_service` block) with your own Key Vault key instead of a Microsoft-managed one. `key_vault_network_access` (default `"Private"`) controls how the control plane reaches the key for etcd/Secrets encryption. ForceNew: only takes effect at cluster creation - changing it later replaces the cluster. The module creates its own system-assigned identity for the disk encryption set and grants both that identity and the cluster's own identity `Key Vault Crypto Service Encryption User` on `key_vault_id`.
+
 ## Prerequisites
 
 1. **Existing VNet** with AKS subnet in `rg-dpn-azure-uks-01`

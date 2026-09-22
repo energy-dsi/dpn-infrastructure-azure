@@ -328,8 +328,45 @@ variable "acr_encryption_enabled" {
 }
 
 variable "acr_key_vault_key_id" {
-  description = "Key Vault key ID for ACR encryption"
+  description = "Key Vault key ID for ACR encryption. Superseded by module.keyvault.key_ids[\"cmk-key\"] in main.tf when acr_encryption_enabled is true; left optional for anyone still setting it directly."
   type        = string
+  default     = null
+}
+
+variable "aks_encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for AKS node OS disks and etcd/Secrets. ForceNew: only takes effect at cluster creation."
+  type        = bool
+  default     = false
+}
+
+variable "dev_storage_encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for the developer storage account"
+  type        = bool
+  default     = false
+}
+
+variable "vm_encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for the Windows VM OS disk"
+  type        = bool
+  default     = false
+}
+
+variable "service_bus_encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for the Service Bus namespace. Requires Premium SKU (Azure platform requirement)."
+  type        = bool
+  default     = false
+}
+
+variable "file_scanning_service_storage_encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for the file-scanning landing-zone storage account"
+  type        = bool
+  default     = false
+}
+
+variable "observability_logging_storage_encryption_enabled" {
+  description = "Enable customer-managed key (CMK) encryption for the observability logging storage account"
+  type        = bool
+  default     = false
 }
 
 variable "acr_create_scope_maps" {

@@ -180,6 +180,7 @@ module "acr" {
 | `trust_policy_enabled` | Accepted but not wired to any resource attribute - has no effect. Docker Content Trust is deprecated by Azure for ACR; see Image Signing below | bool | `false` | no |
 | `encryption_enabled` | Customer-managed keys (Premium) | bool | `false` | no |
 | `key_vault_key_id` | Key Vault key ID | string | `null` | no |
+| `key_vault_id` | Resource ID of the Key Vault holding `key_vault_key_id`. Required when `encryption_enabled` is true - the module grants the ACR encryption identity `Key Vault Crypto Service Encryption User` on this vault | string | `null` | no |
 | `georeplications` | Geo-replication config (Premium) | map(object) | `{}` | no |
 | `create_scope_maps` | Create default scope maps | bool | `false` | no |
 | `webhooks` | Webhook configurations | map(object) | `{}` | no |

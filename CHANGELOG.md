@@ -29,6 +29,15 @@ This project follows **Semantic Versioning (SemVer)** ([semver.org](https://semv
 
 ---
 
+## Release 0.10.1
+
+- Added real customer-managed key (CMK) encryption to `aks` (node OS disks + etcd/Secrets), `storage` (all three deployments), `vm` (OS disk), and `service_bus` (namespace, Premium SKU only) - previously only `container_registry` supported it. Each module follows the same shape: an identity that needs the key gets `Key Vault Crypto Service Encryption User` on the key vault, granted before the resource that uses it.
+- Fixed a pre-existing gap in `container_registry`: `encryption_enabled`/`key_vault_key_id` were already wired to the resource, but there was no `key_vault_id` variable and no role assignment granting the ACR's identity access to the key - turning it on would have failed at apply time with a 403.
+- The example `dpn_infrastructure.tfvars` now defines a shared `cmk-key` in `keyvault_initial_keys` and turns `encryption_enabled` on for all seven resources above.
+- Documented all of the above in the affected modules' READMEs.
+
+---
+
 ## Release 0.10.0
 
 - Rebased the reference implementation onto the current DPN development codebase: refreshed `main.tf`, `variables.tf`, `outputs.tf`, `providers.tf`, every module, and the example `dpn_infrastructure.tfvars`.

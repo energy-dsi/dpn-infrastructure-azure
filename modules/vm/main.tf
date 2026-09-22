@@ -56,10 +56,11 @@ resource "azurerm_windows_virtual_machine" "vm" {
   ]
 
   os_disk {
-    name                 = "${var.vm_name}-osdisk"
-    caching              = var.os_disk_caching
-    storage_account_type = var.os_disk_storage_account_type
-    disk_size_gb         = var.os_disk_size_gb
+    name                   = "${var.vm_name}-osdisk"
+    caching                = var.os_disk_caching
+    storage_account_type   = var.os_disk_storage_account_type
+    disk_size_gb           = var.os_disk_size_gb
+    disk_encryption_set_id = var.encryption_enabled ? azurerm_disk_encryption_set.vm[0].id : null
   }
 
   source_image_reference {
@@ -96,6 +97,34 @@ resource "azurerm_windows_virtual_machine" "vm" {
   license_type                                           = var.license_type
   timezone                                               = var.timezone
   zone                                                   = var.availability_zone
+
+  depends_on = [azurerm_role_assignment.disk_encryption_set_cmk]
+}
+
+# ------------------------------------------------------------------------------
+# Customer-managed key support for the OS disk
+# ------------------------------------------------------------------------------
+resource "azurerm_disk_encryption_set" "vm" {
+  count               = var.encryption_enabled ? 1 : 0
+  name                = "${var.vm_name}-des"
+  resource_group_name = azurerm_resource_group.vm.name
+  location            = azurerm_resource_group.vm.location
+  key_vault_key_id    = var.key_vault_key_id
+  tags                = var.tags
+
+  identity {
+    type = "SystemAssigned"
+  }
+}
+
+# Grants the disk encryption set's identity permission to wrap/unwrap the CMK.
+# Without this, enabling encryption_enabled fails at apply time with 403 when
+# the platform tries to use the key.
+resource "azurerm_role_assignment" "disk_encryption_set_cmk" {
+  count                = var.encryption_enabled ? 1 : 0
+  scope                = var.key_vault_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_disk_encryption_set.vm[0].identity[0].principal_id
 }
 
 resource "azurerm_key_vault_secret" "vm_password" {

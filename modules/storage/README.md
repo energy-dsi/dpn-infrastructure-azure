@@ -39,3 +39,7 @@ module "dev_storage" {
 - resource_group_name
 - file_share_name
 - file_private_endpoint_id
+
+## Customer-Managed Key (CMK) Encryption
+
+Set `encryption_enabled = true` plus `key_vault_key_id` and `key_vault_id` to encrypt this storage account with your own Key Vault key instead of a Microsoft-managed one. The module creates its own user-assigned identity and grants it `Key Vault Crypto Service Encryption User` on `key_vault_id` so it can wrap/unwrap the key. This is independent of `infrastructure_encryption_enabled` (the hardcoded double-layer Microsoft-managed encryption above) - both can be on at once.

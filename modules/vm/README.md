@@ -90,6 +90,10 @@ module "windows_vm" {
 | network_interface_id | ID of the network interface |
 | identity_principal_id | Principal ID of managed identity |
 
+## Customer-Managed Key (CMK) Encryption
+
+Set `encryption_enabled = true` plus `key_vault_key_id` to encrypt the OS disk with your own Key Vault key instead of a Microsoft-managed one, via a disk encryption set the module creates and grants `Key Vault Crypto Service Encryption User` on `key_vault_id`. This is separate from `encryption_at_host_enabled` above (host-level encryption of temp/cache disks) - both can be on at once.
+
 ## Requirements
 
 - OpenTofu >= 1.6

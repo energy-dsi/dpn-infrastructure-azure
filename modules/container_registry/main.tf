@@ -70,6 +70,8 @@ resource "azurerm_container_registry" "acr" {
   lifecycle {
     prevent_destroy = true
   }
+
+  depends_on = [azurerm_role_assignment.acr_cmk]
 }
 
 # ------------------------------------------------------------------------------
@@ -81,6 +83,16 @@ resource "azurerm_user_assigned_identity" "acr" {
   location            = var.location
   resource_group_name = var.resource_group_name
   tags                = var.tags
+}
+
+# Grants the ACR encryption identity permission to wrap/unwrap the CMK.
+# Without this, enabling encryption_enabled fails at apply time with 403 when
+# ACR tries to use the key.
+resource "azurerm_role_assignment" "acr_cmk" {
+  count                = var.encryption_enabled && var.key_vault_id != null ? 1 : 0
+  scope                = var.key_vault_id
+  role_definition_name = "Key Vault Crypto Service Encryption User"
+  principal_id         = azurerm_user_assigned_identity.acr[0].principal_id
 }
 
 # ------------------------------------------------------------------------------
