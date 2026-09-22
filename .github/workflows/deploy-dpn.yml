@@ -1,0 +1,457 @@
+# ==============================================================================
+# DPN Deployment Workflow
+# ==============================================================================
+# Four jobs: Prerequisites -> Plan -> (Approval) -> Apply -> Verify
+#
+# REQUIREMENTS:
+#   Self-hosted runner (label: self-hosted) with network line-of-sight to the
+#   tfstate storage private endpoint and to the resources this config manages.
+#   Run "DPN - Bootstrap Infrastructure" once before the first run of this
+#   workflow.
+#
+# GITHUB SECRETS REQUIRED (repo or environment level):
+#   AZURE_CLIENT_ID          - OIDC deploy identity's application (client) ID
+#   AZURE_TENANT_ID          - Azure AD tenant ID
+#   AZURE_SUBSCRIPTION_ID    - subscription to deploy into
+#   VM_ADMIN_PASSWORD        - VM admin password (sensitive)
+#
+# GITHUB VARIABLES REQUIRED (repo Settings -> Secrets and variables -> Actions
+# -> Variables tab - non-secret, customer-specific configuration):
+#   AZURE_LOCATION           e.g. 'uksouth'
+#   VNET_RESOURCE_GROUP      resource group of your existing VNet
+#   VNET_NAME                name of your existing VNet
+#   TF_STATE_RG              tfstate resource group created by bootstrap
+#   TF_STATE_STORAGE         tfstate storage account created by bootstrap
+#
+# GITHUB ENVIRONMENT REQUIRED (for manual approval gate):
+#   dpn-approval - configure required reviewers at: Settings -> Environments
+# ==============================================================================
+
+name: 'DPN - Deploy Infrastructure'
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - 'dpn-azure-infrastructure/**'
+      - '.github/workflows/deploy-dpn.yml'
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Action to perform'
+        required: true
+        default: 'plan'
+        type: choice
+        options:
+          - plan
+          - apply
+      require_approval:
+        description: 'Require manual approval before apply'
+        required: true
+        default: 'true'
+        type: choice
+        options:
+          - 'true'
+          - 'false'
+      target_module:
+        description: 'Optional: scope plan/apply to one or more modules, comma-separated (e.g. module.bastion,module.aks,module.keyvault). Leave blank to run against the full config.'
+        required: false
+        default: ''
+        type: string
+
+defaults:
+  run:
+    shell: bash
+
+concurrency:
+  group: dpn-deploy
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # required for OIDC authentication
+
+env:
+  TOFU_VERSION: '1.9.0'
+  TF_WORKING_DIR: 'dpn-azure-infrastructure'
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+  VNET_RESOURCE_GROUP: ${{ vars.VNET_RESOURCE_GROUP }}
+  VNET_NAME: ${{ vars.VNET_NAME }}
+  TF_STATE_RG: ${{ vars.TF_STATE_RG }}
+  TF_STATE_STORAGE: ${{ vars.TF_STATE_STORAGE }}
+  ARM_USE_OIDC: 'true'
+  ARM_USE_AZUREAD: 'true'
+  AZURE_CONFIG_DIR: '/tmp/azcfg-${{ github.run_id }}'
+
+# GitHub Actions does not allow the `secrets` context in the workflow-level
+# `env:` block above, so each job that needs Azure credentials declares its
+# own `env:` referencing them directly.
+
+jobs:
+  # =============================================================================
+  # Job 1: Prerequisites Check
+  # =============================================================================
+  prerequisites:
+    name: 'Prerequisites Check'
+    runs-on: [self-hosted]
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'Validate Deployment Subscription Context'
+        run: |
+          CURRENT_SUBSCRIPTION=$(az account show --query id -o tsv)
+          if [ "$CURRENT_SUBSCRIPTION" != "$ARM_SUBSCRIPTION_ID" ]; then
+            echo "::error::Deploy identity is not scoped to the expected subscription. Expected: $ARM_SUBSCRIPTION_ID, Actual: $CURRENT_SUBSCRIPTION"
+            exit 1
+          fi
+          echo "Deployment subscription context is valid: $CURRENT_SUBSCRIPTION"
+
+      - name: 'Verify VNet Exists'
+        run: |
+          VNET_EXISTS=$(az network vnet show --resource-group "$VNET_RESOURCE_GROUP" --name "$VNET_NAME" --query name -o tsv 2>/dev/null || true)
+          if [ -z "$VNET_EXISTS" ]; then
+            echo "::error::VNet '$VNET_NAME' not found in resource group '$VNET_RESOURCE_GROUP'"
+            exit 1
+          fi
+          echo "VNet '$VNET_NAME' exists"
+
+      - name: 'Verify Bootstrap Resources (Storage)'
+        run: |
+          STORAGE_EXISTS=$(az storage account show --name "$TF_STATE_STORAGE" --resource-group "$TF_STATE_RG" --query name -o tsv 2>/dev/null || true)
+          if [ -z "$STORAGE_EXISTS" ]; then
+            echo "::error::OpenTofu state storage '$TF_STATE_STORAGE' not found - run 'DPN - Bootstrap Infrastructure' first"
+            exit 1
+          fi
+          echo "OpenTofu backend storage exists"
+
+      - name: 'Register Resource Providers'
+        run: |
+          echo "Registering required resource providers on subscription $ARM_SUBSCRIPTION_ID..."
+          for ns in \
+            Microsoft.Network \
+            Microsoft.Compute \
+            Microsoft.Storage \
+            Microsoft.KeyVault \
+            Microsoft.ContainerRegistry \
+            Microsoft.ContainerService \
+            Microsoft.ManagedIdentity \
+            Microsoft.OperationalInsights \
+            Microsoft.Insights \
+            Microsoft.OperationsManagement \
+            Microsoft.EventGrid \
+            Microsoft.ServiceBus \
+            Microsoft.ServiceNetworking \
+            Microsoft.PolicyInsights; do
+            STATE=$(az provider show --namespace "$ns" --subscription "$ARM_SUBSCRIPTION_ID" --query "registrationState" -o tsv 2>/dev/null || echo "Unknown")
+            if [ "$STATE" = "Registered" ]; then
+              echo "  $ns: already registered"
+            else
+              echo "  $ns: registering (current state: $STATE)..."
+              az provider register --namespace "$ns" --subscription "$ARM_SUBSCRIPTION_ID" --wait
+            fi
+          done
+
+          echo ""
+          echo "Checking EncryptionAtHost feature (required for host_encryption_enabled on AKS node pools)..."
+          FEATURE_STATE=$(az feature show --name EncryptionAtHost --namespace Microsoft.Compute --query "properties.state" -o tsv 2>/dev/null || echo "NotRegistered")
+          if [ "$FEATURE_STATE" = "Registered" ]; then
+            echo "  EncryptionAtHost: already registered"
+          else
+            az feature register --name EncryptionAtHost --namespace Microsoft.Compute || true
+            for i in $(seq 1 20); do
+              FEATURE_STATE=$(az feature show --name EncryptionAtHost --namespace Microsoft.Compute --query "properties.state" -o tsv 2>/dev/null || echo "Unknown")
+              echo "  Attempt $i/20: $FEATURE_STATE"
+              if [ "$FEATURE_STATE" = "Registered" ]; then
+                az provider register --namespace Microsoft.Compute --subscription "$ARM_SUBSCRIPTION_ID" --wait
+                break
+              fi
+              sleep 30
+            done
+            if [ "$FEATURE_STATE" != "Registered" ]; then
+              echo "::warning::EncryptionAtHost is '$FEATURE_STATE' after 10 minutes - AKS host encryption may fail on first deploy"
+            fi
+          fi
+          echo "Resource provider registration complete"
+
+      - name: 'Grant deploy identity Key Vault Secrets Officer'
+        run: |
+          ARM_OID=$(az ad sp show --id "$AZURE_CLIENT_ID" --query id -o tsv 2>/dev/null | tr -d '\r\n')
+          SCOPE="/subscriptions/$ARM_SUBSCRIPTION_ID"
+          EXISTING=$(az role assignment list --assignee-object-id "$ARM_OID" --include-inherited --role "Key Vault Secrets Officer" --query "[0].id" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+          if [ -n "$EXISTING" ]; then
+            echo "Key Vault Secrets Officer: already assigned to deploy identity"
+          else
+            az role assignment create --assignee-object-id "$ARM_OID" --assignee-principal-type ServicePrincipal --role "Key Vault Secrets Officer" --scope "$SCOPE" \
+              && echo "Granted Key Vault Secrets Officer - RBAC propagation will complete during plan + approval before apply runs" \
+              || echo "::warning::Could not grant Key Vault Secrets Officer - apply may fail until this is assigned manually"
+          fi
+
+  # =============================================================================
+  # Job 2: OpenTofu Plan
+  # =============================================================================
+  plan:
+    name: 'OpenTofu Plan'
+    runs-on: [self-hosted]
+    needs: prerequisites
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Checkout'
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null \
+            || git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git reset --hard 2>/dev/null || true
+          git checkout -f FETCH_HEAD
+          git clean -ffd
+
+      - name: 'Install OpenTofu ${{ env.TOFU_VERSION }}'
+        run: |
+          set -e
+          curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+          chmod +x install-opentofu.sh
+          ./install-opentofu.sh --install-method standalone --opentofu-version "$TOFU_VERSION"
+          tofu --version
+
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'OpenTofu Format Check'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        continue-on-error: true
+        run: |
+          if ! tofu fmt -check -recursive; then
+            echo "::warning::OpenTofu code is not properly formatted. Run 'tofu fmt -recursive' to fix."
+          else
+            echo "OK: All OpenTofu files are properly formatted"
+          fi
+
+      - name: 'OpenTofu Init + Validate + Plan'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$TF_VAR_vm_admin_password" ]; then
+            echo "::error::Missing required secret: VM_ADMIN_PASSWORD"
+            exit 1
+          fi
+
+          rm -rf .terraform
+          timeout 120 tofu init -reconfigure \
+            -backend-config="resource_group_name=${TF_STATE_RG}" \
+            -backend-config="storage_account_name=${TF_STATE_STORAGE}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=dpn.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            || { echo "::error::tofu init failed - verify the runner has network line-of-sight to the tfstate storage private endpoint"; exit 1; }
+
+          tofu validate
+          echo "OK: OpenTofu configuration is valid"
+
+          TARGET_ARGS=""
+          if [ -n "${{ inputs.target_module }}" ]; then
+            IFS=',' read -ra TARGET_LIST <<< "${{ inputs.target_module }}"
+            for t in "${TARGET_LIST[@]}"; do
+              t="$(echo "$t" | xargs)"
+              [ -n "$t" ] && TARGET_ARGS="$TARGET_ARGS -target=$t"
+            done
+            echo "Scoping plan to: ${{ inputs.target_module }}"
+          fi
+
+          set +o pipefail
+          tofu plan $TARGET_ARGS -var-file=environments/dpn_infrastructure.tfvars -out=tfplan -input=false -no-color 2>&1 | tee plan-output.txt
+          PLAN_RC=${PIPESTATUS[0]}
+          set -o pipefail
+          if [ "$PLAN_RC" != "0" ]; then echo "::error::tofu plan failed with exit code $PLAN_RC - see output above"; exit $PLAN_RC; fi
+
+          if grep -q "Plan:" plan-output.txt; then
+            echo "Infrastructure changes detected - review plan output above"
+            grep "Plan:" plan-output.txt
+          else
+            echo "No infrastructure changes required"
+          fi
+
+  # =============================================================================
+  # Job 3: Manual Approval Gate
+  # Requires a GitHub Environment named 'dpn-approval' with required reviewers.
+  # Configure at: Settings -> Environments -> New environment
+  # =============================================================================
+  approve:
+    name: 'Manual Approval'
+    runs-on: [self-hosted]
+    needs: plan
+    if: inputs.action == 'apply' && inputs.require_approval == 'true'
+    environment: dpn-approval
+    steps:
+      - name: 'Approval granted'
+        run: echo "Manual approval received. Proceeding with OpenTofu Apply."
+
+  # =============================================================================
+  # Job 4: OpenTofu Apply
+  # =============================================================================
+  apply:
+    name: 'OpenTofu Apply'
+    runs-on: [self-hosted]
+    needs: [plan, approve]
+    if: |
+      always() &&
+      needs.plan.result == 'success' &&
+      (needs.approve.result == 'success' || needs.approve.result == 'skipped') &&
+      inputs.action == 'apply'
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Checkout'
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null \
+            || git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git reset --hard 2>/dev/null || true
+          git checkout -f FETCH_HEAD
+          git clean -ffd
+
+      - name: 'Install OpenTofu ${{ env.TOFU_VERSION }}'
+        run: |
+          set -e
+          curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+          chmod +x install-opentofu.sh
+          ./install-opentofu.sh --install-method standalone --opentofu-version "$TOFU_VERSION"
+          tofu --version
+
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'OpenTofu Apply'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        env:
+          TF_VAR_vm_admin_password: ${{ secrets.VM_ADMIN_PASSWORD }}
+        run: |
+          set -e
+          if [ -z "$TF_VAR_vm_admin_password" ]; then echo "::error::Missing secret: VM_ADMIN_PASSWORD"; exit 1; fi
+
+          rm -rf .terraform
+          timeout 600 tofu init \
+            -backend-config="resource_group_name=${TF_STATE_RG}" \
+            -backend-config="storage_account_name=${TF_STATE_STORAGE}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=dpn.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            || { echo "::error::tofu init failed"; exit 1; }
+
+          [ -f environments/dpn_infrastructure.tfvars ] || { echo "::error::environments/dpn_infrastructure.tfvars not found"; exit 1; }
+
+          TARGET_ARGS=""
+          if [ -n "${{ inputs.target_module }}" ]; then
+            IFS=',' read -ra TARGET_LIST <<< "${{ inputs.target_module }}"
+            for t in "${TARGET_LIST[@]}"; do
+              t="$(echo "$t" | xargs)"
+              [ -n "$t" ] && TARGET_ARGS="$TARGET_ARGS -target=$t"
+            done
+            echo "Scoping apply to: ${{ inputs.target_module }}"
+          fi
+
+          set +e
+          tofu apply $TARGET_ARGS -var-file=environments/dpn_infrastructure.tfvars -parallelism=4 -auto-approve -no-color 2>&1
+          APPLY_RC=$?
+          set -e
+          if [ "$APPLY_RC" != "0" ]; then
+            echo "::error::tofu apply failed with exit code $APPLY_RC - see output above"
+            exit 1
+          fi
+          echo "OpenTofu apply completed"
+
+  # =============================================================================
+  # Job 5: Post-Deployment Verification
+  # =============================================================================
+  verify:
+    name: 'Post-Deployment Verification'
+    runs-on: [self-hosted]
+    needs: apply
+    if: inputs.action == 'apply'
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+      ARM_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      ARM_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Checkout'
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null \
+            || git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git reset --hard 2>/dev/null || true
+          git checkout -f FETCH_HEAD
+          git clean -ffd
+
+      - name: 'Install OpenTofu ${{ env.TOFU_VERSION }}'
+        run: |
+          set -e
+          curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+          chmod +x install-opentofu.sh
+          ./install-opentofu.sh --install-method standalone --opentofu-version "$TOFU_VERSION"
+
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'Verify Terraform Outputs'
+        working-directory: ${{ env.TF_WORKING_DIR }}
+        run: |
+          set -e
+          timeout 120 tofu init -reconfigure \
+            -backend-config="resource_group_name=${TF_STATE_RG}" \
+            -backend-config="storage_account_name=${TF_STATE_STORAGE}" \
+            -backend-config="container_name=tfstate" \
+            -backend-config="key=dpn.tfstate" \
+            -backend-config="use_azuread_auth=true" \
+            || { echo "::error::tofu init failed"; exit 1; }
+
+          OUTPUTS=$(tofu output -json)
+          echo "$OUTPUTS" | jq -r 'to_entries[] | "\(.key): \(.value.value)"'
+
+          MISSING=0
+          for key in vnet_id log_analytics_workspace_id keyvault_id acr_id aks_cluster_id dev_storage_account_id; do
+            VALUE=$(echo "$OUTPUTS" | jq -r --arg k "$key" '.[$k].value // empty')
+            if [ -z "$VALUE" ]; then
+              echo "::error::Expected output '$key' is missing or empty"
+              MISSING=1
+            fi
+          done
+          if [ "$MISSING" != "0" ]; then exit 1; fi
+          echo "All expected outputs are present"

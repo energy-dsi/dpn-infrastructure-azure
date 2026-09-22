@@ -1,0 +1,12 @@
+# Force LF line endings for all files so Linux runners do not get CRLF
+* text=auto eol=lf
+
+# Explicitly keep LF for workflow and script files
+*.yml  text eol=lf
+*.yaml text eol=lf
+*.sh   text eol=lf
+*.bicep text eol=lf
+*.tf   text eol=lf
+*.tfvars text eol=lf
+*.json text eol=lf
+*.md   text eol=lf

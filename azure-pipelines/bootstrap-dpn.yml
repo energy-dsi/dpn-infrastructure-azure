@@ -1,0 +1,147 @@
+# ==============================================================================
+# Azure DevOps equivalent of .github/workflows/bootstrap-dpn.yml
+# ==============================================================================
+# One-time (per environment) setup of the OpenTofu remote-state backend:
+# tfstate storage account + private endpoint, plus the NSG/subnet it needs in
+# your existing VNet. Deploys dpn-azure-infrastructure/bootstrap/main.bicep.
+#
+# Run this once before the first run of deploy-dpn.yml. Safe to re-run (ARM
+# deployments are idempotent).
+#
+# PREREQUISITES:
+#   - A self-hosted agent pool (parameter `poolName`) with network
+#     line-of-sight to the private endpoint this pipeline creates.
+#   - ARM service connection (parameter `serviceConnection`), configured for
+#     Workload Identity Federation, scoped to your DPN subscription.
+#   - The deploy identity must already have "Private DNS Zone Contributor" on
+#     the shared blob private DNS zone (granted per permissions/README.md -
+#     this is a tenant prerequisite, not something this pipeline provisions)
+#     so the storage account's private endpoint can register its own DNS
+#     record.
+#   - Variable group `dpn-secrets` (Pipelines -> Library) with secret
+#     variables: ARM_SUBSCRIPTION_ID, PRIVATE_DNS_ZONE_SUBSCRIPTION_ID (same
+#     value as ARM_SUBSCRIPTION_ID if you don't use a separate one).
+#   - Variable group `dpn-config` (Pipelines -> Library) with non-secret
+#     configuration: ENVIRONMENT_NAME, AZURE_LOCATION, BACKEND_RESOURCE_GROUP,
+#     BACKEND_STORAGE_ACCOUNT, VNET_RESOURCE_GROUP, VNET_NAME,
+#     TFSTATE_SUBNET_PREFIX, TFSTATE_NSG_NAME, TFSTATE_SUBNET_NAME,
+#     PRIVATE_DNS_ZONE_RESOURCE_GROUP.
+# ==============================================================================
+
+name: 'DPN - Bootstrap Infrastructure ($(Date:yyyyMMdd)$(Rev:.r))'
+
+trigger: none
+pr: none
+
+parameters:
+  - name: poolName
+    displayName: 'Self-hosted agent pool name'
+    type: string
+    default: 'self-hosted-pool'
+  - name: serviceConnection
+    displayName: 'ARM service connection (workload identity federation) for your DPN subscription'
+    type: string
+    default: 'sc-dpn-azure'
+
+variables:
+  - group: dpn-secrets
+  - group: dpn-config
+  - name: DNS_ZONE_NAME
+    value: 'privatelink.blob.core.windows.net'
+  - name: BOOTSTRAP_TEMPLATE
+    value: 'dpn-azure-infrastructure/bootstrap/main.bicep'
+
+pool:
+  name: '${{ parameters.poolName }}'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Deploy bootstrap Bicep (ARM deployments are idempotent)
+  # ===========================================================================
+  - stage: Bootstrap
+    displayName: 'Bootstrap Infrastructure'
+    jobs:
+      - job: Deploy
+        displayName: 'Deploy bootstrap infrastructure'
+        steps:
+          - checkout: self
+
+          - task: AzureCLI@2
+            displayName: 'Validate Deployment Subscription Context'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                CURRENT=$(az account show --query id -o tsv | tr -d '\r\n')
+                if [ "$CURRENT" != "$(ARM_SUBSCRIPTION_ID)" ]; then
+                  echo "##vso[task.logissue type=error]Expected $(ARM_SUBSCRIPTION_ID), got $CURRENT"
+                  exit 1
+                fi
+                echo "Subscription context valid: $CURRENT"
+
+          - task: AzureCLI@2
+            displayName: 'Deploy bootstrap infrastructure'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                DNS_ZONE_ID="/subscriptions/$(PRIVATE_DNS_ZONE_SUBSCRIPTION_ID)/resourceGroups/$(PRIVATE_DNS_ZONE_RESOURCE_GROUP)/providers/Microsoft.Network/privateDnsZones/$(DNS_ZONE_NAME)"
+
+                az deployment sub create \
+                  --location "$(AZURE_LOCATION)" \
+                  --template-file "$(BOOTSTRAP_TEMPLATE)" \
+                  --parameters \
+                    envConfig="$(ENVIRONMENT_NAME)" region="$(AZURE_LOCATION)" \
+                    bootstrapResourceGroupName="$(BACKEND_RESOURCE_GROUP)" \
+                    backendStorageAccountName="$(BACKEND_STORAGE_ACCOUNT)" \
+                    infraResourceGroupName="$(VNET_RESOURCE_GROUP)" \
+                    vnetResourceGroupName="$(VNET_RESOURCE_GROUP)" vnetName="$(VNET_NAME)" \
+                    tfstateSubnetPrefix="$(TFSTATE_SUBNET_PREFIX)" \
+                    tfstateNsgName="$(TFSTATE_NSG_NAME)" tfstateSubnetName="$(TFSTATE_SUBNET_NAME)" \
+                    privateDnsZoneId="${DNS_ZONE_ID}" \
+                  --output json
+
+                PE_STATE=$(az network private-endpoint show --name "pe-$(BACKEND_STORAGE_ACCOUNT)" --resource-group "$(BACKEND_RESOURCE_GROUP)" --query "provisioningState" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+                if [ "$PE_STATE" != "Succeeded" ]; then
+                  echo "##vso[task.logissue type=error]Private endpoint state: ${PE_STATE:-not found}"
+                  exit 1
+                fi
+                echo "Bootstrap deployment complete - private endpoint provisioned successfully"
+
+  # ===========================================================================
+  # Stage 2: RBAC - grant the deploy identity Storage Blob Data Contributor
+  # ===========================================================================
+  - stage: Rbac
+    displayName: 'Configure RBAC Permissions'
+    dependsOn: Bootstrap
+    condition: succeeded()
+    jobs:
+      - job: ConfigureRbac
+        displayName: 'Ensure Storage Blob Data Contributor'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Ensure deploy identity has Storage Blob Data Contributor on tfstate storage'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                STORAGE_ID="/subscriptions/$(ARM_SUBSCRIPTION_ID)/resourceGroups/$(BACKEND_RESOURCE_GROUP)/providers/Microsoft.Storage/storageAccounts/$(BACKEND_STORAGE_ACCOUNT)"
+                SP_OBJECT_ID=$(az ad sp show --id "$servicePrincipalId" --query id -o tsv 2>/dev/null | tr -d '\r\n')
+                if [ -z "$SP_OBJECT_ID" ]; then
+                  echo "##vso[task.logissue type=error]Cannot determine SP object ID for the service connection identity"
+                  exit 1
+                fi
+                EXISTING=$(az role assignment list --assignee-object-id "$SP_OBJECT_ID" --scope "$STORAGE_ID" --include-inherited --query '[].roleDefinitionName' -o tsv 2>/dev/null | tr -d '\r\n' || true)
+                BLOB_ROLE_ID="ba92f5b4-2d11-453d-a403-e96b0029c9fe"
+                case "$EXISTING" in
+                  *Blob*)
+                    echo "Storage Blob Data Contributor already assigned to deployment identity" ;;
+                  *)
+                    az role assignment create --assignee-object-id "$SP_OBJECT_ID" --assignee-principal-type ServicePrincipal --role "$BLOB_ROLE_ID" --scope "$STORAGE_ID"
+                    echo "Storage Blob Data Contributor assigned" ;;
+                esac

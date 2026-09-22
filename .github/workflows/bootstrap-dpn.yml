@@ -1,0 +1,171 @@
+# ==============================================================================
+# Bootstrap Workflow - DPN
+# ==============================================================================
+# One-time (per environment) setup of the OpenTofu remote-state backend:
+# tfstate storage account + private endpoint, plus the NSG/subnet it needs in
+# your existing VNet. Deploys dpn-azure-infrastructure/bootstrap/main.bicep.
+#
+# Run this once before the first "DPN - Deploy Infrastructure" run. It is
+# safe to re-run (ARM deployments are idempotent) if you change bootstrap
+# inputs later.
+#
+# PREREQUISITES:
+#   - A self-hosted runner with network line-of-sight to the private
+#     endpoint this workflow creates (label: self-hosted).
+#   - OIDC federated credential configured on your deploy app registration
+#     (see permissions/dpn-cicd-identity.bicep), subject matching this repo
+#     and the branch below.
+#   - The deploy identity must already have "Private DNS Zone Contributor"
+#     on the shared blob private DNS zone (granted per permissions/README.md -
+#     this is a tenant prerequisite, not something this workflow provisions)
+#     so the storage account's private endpoint can register its own DNS
+#     record.
+#
+# GITHUB SECRETS REQUIRED (repo or environment level):
+#   AZURE_CLIENT_ID                 - OIDC deploy identity's application (client) ID
+#   AZURE_TENANT_ID                 - Azure AD tenant ID
+#   AZURE_SUBSCRIPTION_ID           - subscription to bootstrap
+#   PRIVATE_DNS_ZONE_SUBSCRIPTION_ID - subscription hosting your private DNS zones
+#                                   (same value as AZURE_SUBSCRIPTION_ID if you
+#                                   don't use a separate one)
+#
+# GITHUB VARIABLES REQUIRED (repo Settings -> Secrets and variables -> Actions
+# -> Variables tab - non-secret, customer-specific configuration):
+#   AZURE_LOCATION                 e.g. 'uksouth'
+#   ENVIRONMENT_NAME                e.g. 'dev'
+#   BACKEND_RESOURCE_GROUP          resource group to create for the tfstate storage account
+#   BACKEND_STORAGE_ACCOUNT         name for the tfstate storage account (must be globally unique)
+#   VNET_RESOURCE_GROUP             resource group of your existing VNet
+#   VNET_NAME                       name of your existing VNet
+#   TFSTATE_SUBNET_PREFIX           CIDR to carve out of that VNet for the tfstate private endpoint
+#   TFSTATE_NSG_NAME                name for the NSG protecting the tfstate subnet
+#   TFSTATE_SUBNET_NAME             name for the tfstate subnet
+#   PRIVATE_DNS_ZONE_RESOURCE_GROUP resource group holding your private DNS zones
+# ==============================================================================
+
+name: 'DPN - Bootstrap Infrastructure'
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: dpn-bootstrap
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  id-token: write   # required for OIDC authentication
+
+env:
+  DNS_ZONE_NAME: 'privatelink.blob.core.windows.net'
+  BOOTSTRAP_TEMPLATE: 'dpn-azure-infrastructure/bootstrap/main.bicep'
+  AZURE_LOCATION: ${{ vars.AZURE_LOCATION }}
+  ENVIRONMENT_NAME: ${{ vars.ENVIRONMENT_NAME }}
+  BACKEND_RESOURCE_GROUP: ${{ vars.BACKEND_RESOURCE_GROUP }}
+  BACKEND_STORAGE_ACCOUNT: ${{ vars.BACKEND_STORAGE_ACCOUNT }}
+  VNET_RESOURCE_GROUP: ${{ vars.VNET_RESOURCE_GROUP }}
+  VNET_NAME: ${{ vars.VNET_NAME }}
+  TFSTATE_SUBNET_PREFIX: ${{ vars.TFSTATE_SUBNET_PREFIX }}
+  TFSTATE_NSG_NAME: ${{ vars.TFSTATE_NSG_NAME }}
+  TFSTATE_SUBNET_NAME: ${{ vars.TFSTATE_SUBNET_NAME }}
+  PRIVATE_DNS_ZONE_RESOURCE_GROUP: ${{ vars.PRIVATE_DNS_ZONE_RESOURCE_GROUP }}
+  AZURE_CONFIG_DIR: '/tmp/azcfg-${{ github.run_id }}'
+
+# GitHub Actions does not allow the `secrets` context in the workflow-level
+# `env:` block above, so each job declares its own `env:` referencing them.
+
+jobs:
+  deploy:
+    name: 'Deploy Bootstrap Infrastructure'
+    runs-on: [self-hosted]
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      DNS_SUBSCRIPTION_ID: ${{ secrets.PRIVATE_DNS_ZONE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Checkout'
+        run: |
+          git init .
+          git remote add origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git" 2>/dev/null \
+            || git remote set-url origin "https://x-access-token:${{ github.token }}@github.com/${{ github.repository }}.git"
+          git fetch --depth=1 origin "$GITHUB_SHA"
+          git reset --hard 2>/dev/null || true
+          git checkout -f FETCH_HEAD
+          git clean -ffd
+
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'Deploy bootstrap infrastructure'
+        run: |
+          set -e
+          DNS_ZONE_ID="/subscriptions/${DNS_SUBSCRIPTION_ID}/resourceGroups/${PRIVATE_DNS_ZONE_RESOURCE_GROUP}/providers/Microsoft.Network/privateDnsZones/${DNS_ZONE_NAME}"
+
+          # ARM template deployments are idempotent - always run and let Azure
+          # figure out what (if anything) needs to change.
+          az deployment sub create \
+            --location "${AZURE_LOCATION}" \
+            --template-file "${BOOTSTRAP_TEMPLATE}" \
+            --parameters \
+              envConfig="${ENVIRONMENT_NAME}" region="${AZURE_LOCATION}" \
+              bootstrapResourceGroupName="${BACKEND_RESOURCE_GROUP}" \
+              backendStorageAccountName="${BACKEND_STORAGE_ACCOUNT}" \
+              infraResourceGroupName="${VNET_RESOURCE_GROUP}" \
+              vnetResourceGroupName="${VNET_RESOURCE_GROUP}" vnetName="${VNET_NAME}" \
+              tfstateSubnetPrefix="${TFSTATE_SUBNET_PREFIX}" \
+              tfstateNsgName="${TFSTATE_NSG_NAME}" tfstateSubnetName="${TFSTATE_SUBNET_NAME}" \
+              privateDnsZoneId="${DNS_ZONE_ID}" \
+            --output json
+
+          PE_STATE=$(az network private-endpoint show --name "pe-${BACKEND_STORAGE_ACCOUNT}" --resource-group "${BACKEND_RESOURCE_GROUP}" --query "provisioningState" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+          if [ "$PE_STATE" != "Succeeded" ]; then
+            echo "::error::Private endpoint state: ${PE_STATE:-not found}"
+            exit 1
+          fi
+          echo "Bootstrap deployment complete - private endpoint provisioned successfully"
+
+  rbac:
+    name: 'Configure RBAC Permissions'
+    runs-on: [self-hosted]
+    needs: deploy
+    env:
+      ARM_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+      AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+      AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+    steps:
+      - name: 'Azure Login (OIDC)'
+        run: |
+          OIDC_TOKEN=$(curl -sS -H "Authorization: bearer $ACTIONS_ID_TOKEN_REQUEST_TOKEN" "${ACTIONS_ID_TOKEN_REQUEST_URL}&audience=api://AzureADTokenExchange" | jq -r '.value')
+          if [ -z "$OIDC_TOKEN" ] || [ "$OIDC_TOKEN" = "null" ]; then echo "::error::Failed to obtain OIDC token from GitHub Actions"; exit 1; fi
+          az login --service-principal --username "$AZURE_CLIENT_ID" --tenant "$AZURE_TENANT_ID" --federated-token "$OIDC_TOKEN"
+          az account set --subscription "$ARM_SUBSCRIPTION_ID"
+
+      - name: 'Ensure deploy identity has Storage Blob Data Contributor on tfstate storage'
+        run: |
+          STORAGE_ID="/subscriptions/${ARM_SUBSCRIPTION_ID}/resourceGroups/${BACKEND_RESOURCE_GROUP}/providers/Microsoft.Storage/storageAccounts/${BACKEND_STORAGE_ACCOUNT}"
+          ARM_TOKEN=$(az account get-access-token --query accessToken -o tsv 2>/dev/null | tr -d '\r\n')
+          printf '%s\n' \
+            'import sys, base64, json' \
+            'p = sys.stdin.read().strip()' \
+            'p += "=" * (4 - len(p) % 4)' \
+            'print(json.loads(base64.urlsafe_b64decode(p)).get("oid", ""))' \
+            > /tmp/get_oid.py
+          SP_OBJECT_ID=$(echo "$ARM_TOKEN" | cut -d. -f2 | python3 /tmp/get_oid.py 2>/dev/null | tr -d '\r\n' || true)
+          if [ -z "$SP_OBJECT_ID" ]; then
+            echo "::error::Cannot determine deploy identity object ID from ARM token"
+            exit 1
+          fi
+          EXISTING=$(az role assignment list --assignee-object-id "$SP_OBJECT_ID" --scope "$STORAGE_ID" --include-inherited --query '[].roleDefinitionName' -o tsv 2>/dev/null | tr -d '\r\n' || true)
+          BLOB_ROLE_ID="ba92f5b4-2d11-453d-a403-e96b0029c9fe" # Storage Blob Data Contributor (built-in role, universal GUID)
+          case "$EXISTING" in
+            *Blob*)
+              echo "Storage Blob Data Contributor already assigned to deploy identity" ;;
+            *)
+              az role assignment create --assignee-object-id "$SP_OBJECT_ID" --assignee-principal-type ServicePrincipal --role "$BLOB_ROLE_ID" --scope "$STORAGE_ID"
+              echo "Storage Blob Data Contributor assigned" ;;
+          esac

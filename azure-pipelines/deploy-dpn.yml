@@ -1,0 +1,416 @@
+# ==============================================================================
+# Azure DevOps equivalent of .github/workflows/deploy-dpn.yml
+# ==============================================================================
+# Four stages: Prerequisites -> Plan -> Approve -> Apply -> Verify
+#
+# PREREQUISITES:
+#   - A self-hosted agent pool (parameter `poolName`) with network
+#     line-of-sight to the tfstate storage private endpoint and to the
+#     resources this config manages.
+#   - ARM service connection (parameter `serviceConnection`), configured for
+#     Workload Identity Federation, scoped to your DPN subscription.
+#   - Environment `dpn-approval` (Pipelines -> Environments) with an
+#     Approvals check configured under "Approvals and checks".
+#   - Variable group `dpn-secrets` (Pipelines -> Library) with secret
+#     variable: ARM_SUBSCRIPTION_ID, and pipeline variable VM_ADMIN_PASSWORD
+#     (mark secret in the Library).
+#   - Variable group `dpn-config` (Pipelines -> Library) with non-secret
+#     configuration: AZURE_LOCATION, VNET_RESOURCE_GROUP, VNET_NAME,
+#     TF_STATE_RG, TF_STATE_STORAGE.
+#   - Run the bootstrap pipeline first.
+# ==============================================================================
+
+name: 'DPN - Deploy Infrastructure ($(Date:yyyyMMdd)$(Rev:.r))'
+
+trigger:
+  branches:
+    include:
+      - main
+  paths:
+    include:
+      - dpn-azure-infrastructure/*
+      - azure-pipelines/deploy-dpn.yml
+pr: none
+
+parameters:
+  - name: action
+    displayName: 'Action to perform'
+    type: string
+    default: 'plan'
+    values:
+      - plan
+      - apply
+  - name: requireApproval
+    displayName: 'Require manual approval before apply'
+    type: boolean
+    default: true
+  - name: targetModule
+    displayName: 'Optional: scope plan/apply to one or more modules, comma-separated (e.g. module.bastion,module.aks,module.keyvault). Leave blank for full config.'
+    type: string
+    default: ''
+  - name: poolName
+    displayName: 'Self-hosted agent pool name'
+    type: string
+    default: 'self-hosted-pool'
+  - name: serviceConnection
+    displayName: 'ARM service connection (workload identity federation) for your DPN subscription'
+    type: string
+    default: 'sc-dpn-azure'
+
+variables:
+  - group: dpn-secrets
+  - group: dpn-config
+  - name: TOFU_VERSION
+    value: '1.9.0'
+  - name: TF_WORKING_DIR
+    value: 'dpn-azure-infrastructure'
+
+pool:
+  name: '${{ parameters.poolName }}'
+
+stages:
+  # ===========================================================================
+  # Stage 1: Prerequisites Check
+  # ===========================================================================
+  - stage: Prerequisites
+    displayName: 'Prerequisites Check'
+    jobs:
+      - job: PrerequisitesCheck
+        displayName: 'Prerequisites Check'
+        steps:
+          - task: AzureCLI@2
+            displayName: 'Validate Deployment Subscription Context'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                CURRENT_SUBSCRIPTION=$(az account show --query id -o tsv)
+                if [ "$CURRENT_SUBSCRIPTION" != "$(ARM_SUBSCRIPTION_ID)" ]; then
+                  echo "##vso[task.logissue type=error]Expected $(ARM_SUBSCRIPTION_ID), got $CURRENT_SUBSCRIPTION"
+                  exit 1
+                fi
+                echo "Deployment subscription context is valid"
+
+          - task: AzureCLI@2
+            displayName: 'Verify VNet Exists'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                VNET_EXISTS=$(az network vnet show --resource-group "$(VNET_RESOURCE_GROUP)" --name "$(VNET_NAME)" --query name -o tsv 2>/dev/null || true)
+                if [ -z "$VNET_EXISTS" ]; then
+                  echo "##vso[task.logissue type=error]VNet '$(VNET_NAME)' not found in resource group '$(VNET_RESOURCE_GROUP)'"
+                  exit 1
+                fi
+                echo "VNet '$(VNET_NAME)' exists"
+
+          - task: AzureCLI@2
+            displayName: 'Verify Bootstrap Resources (Storage)'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                STORAGE_EXISTS=$(az storage account show --name "$(TF_STATE_STORAGE)" --resource-group "$(TF_STATE_RG)" --query name -o tsv 2>/dev/null || true)
+                if [ -z "$STORAGE_EXISTS" ]; then
+                  echo "##vso[task.logissue type=error]OpenTofu state storage '$(TF_STATE_STORAGE)' not found - run the bootstrap pipeline first"
+                  exit 1
+                fi
+                echo "OpenTofu backend storage exists"
+
+          - task: AzureCLI@2
+            displayName: 'Register Resource Providers'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                echo "Registering required resource providers on subscription $(ARM_SUBSCRIPTION_ID)..."
+                for ns in Microsoft.Network Microsoft.Compute Microsoft.Storage Microsoft.KeyVault \
+                          Microsoft.ContainerRegistry Microsoft.ContainerService Microsoft.ManagedIdentity \
+                          Microsoft.OperationalInsights Microsoft.Insights Microsoft.OperationsManagement \
+                          Microsoft.EventGrid Microsoft.ServiceBus Microsoft.ServiceNetworking Microsoft.PolicyInsights; do
+                  STATE=$(az provider show --namespace "$ns" --subscription "$(ARM_SUBSCRIPTION_ID)" --query "registrationState" -o tsv 2>/dev/null || echo "Unknown")
+                  if [ "$STATE" = "Registered" ]; then
+                    echo "  $ns: already registered"
+                  else
+                    echo "  $ns: registering (current state: $STATE)..."
+                    az provider register --namespace "$ns" --subscription "$(ARM_SUBSCRIPTION_ID)" --wait
+                  fi
+                done
+                echo ""
+                echo "Checking EncryptionAtHost feature..."
+                FEATURE_STATE=$(az feature show --name EncryptionAtHost --namespace Microsoft.Compute --query "properties.state" -o tsv 2>/dev/null || echo "NotRegistered")
+                if [ "$FEATURE_STATE" = "Registered" ]; then
+                  echo "  EncryptionAtHost: already registered"
+                else
+                  az feature register --name EncryptionAtHost --namespace Microsoft.Compute || true
+                  for i in $(seq 1 20); do
+                    FEATURE_STATE=$(az feature show --name EncryptionAtHost --namespace Microsoft.Compute --query "properties.state" -o tsv 2>/dev/null || echo "Unknown")
+                    echo "  Attempt $i/20: $FEATURE_STATE"
+                    [ "$FEATURE_STATE" = "Registered" ] && { az provider register --namespace Microsoft.Compute --subscription "$(ARM_SUBSCRIPTION_ID)" --wait; break; }
+                    sleep 30
+                  done
+                  [ "$FEATURE_STATE" != "Registered" ] && echo "##vso[task.logissue type=warning]EncryptionAtHost is '$FEATURE_STATE' after 10 minutes"
+                fi
+                echo "Resource provider registration complete"
+
+          - task: AzureCLI@2
+            displayName: 'Grant deploy identity Key Vault Secrets Officer'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                ARM_OID=$(az ad sp show --id "$servicePrincipalId" --query id -o tsv 2>/dev/null | tr -d '\r\n')
+                SCOPE="/subscriptions/$(ARM_SUBSCRIPTION_ID)"
+                EXISTING_KV_ROLE=$(az role assignment list --assignee-object-id "$ARM_OID" --include-inherited --role "Key Vault Secrets Officer" --query "[0].id" -o tsv 2>/dev/null | tr -d '\r\n' || true)
+                if [ -n "$EXISTING_KV_ROLE" ]; then
+                  echo "Key Vault Secrets Officer: already assigned to deploy identity"
+                else
+                  az role assignment create --assignee-object-id "$ARM_OID" --assignee-principal-type ServicePrincipal --role "Key Vault Secrets Officer" --scope "$SCOPE" \
+                    && echo "Granted Key Vault Secrets Officer - RBAC propagation will complete during plan + approval before apply runs" \
+                    || echo "##vso[task.logissue type=warning]Could not grant Key Vault Secrets Officer - apply may fail until this is assigned manually"
+                fi
+
+  # ===========================================================================
+  # Stage 2: OpenTofu Plan
+  # ===========================================================================
+  - stage: Plan
+    displayName: 'OpenTofu Plan'
+    dependsOn: Prerequisites
+    condition: succeeded()
+    jobs:
+      - job: OpenTofuPlan
+        displayName: 'OpenTofu Plan'
+        steps:
+          - checkout: self
+
+          - bash: |
+              set -e
+              curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+              chmod +x install-opentofu.sh
+              ./install-opentofu.sh --install-method standalone --opentofu-version "$(TOFU_VERSION)"
+              tofu --version
+            displayName: 'Install OpenTofu $(TOFU_VERSION)'
+
+          - bash: |
+              if ! tofu fmt -check -recursive; then
+                echo "##vso[task.logissue type=warning]OpenTofu code is not properly formatted. Run 'tofu fmt -recursive' to fix."
+              else
+                echo "OK: All OpenTofu files are properly formatted"
+              fi
+            workingDirectory: '$(TF_WORKING_DIR)'
+            displayName: 'OpenTofu Format Check'
+            continueOnError: true
+
+          - task: AzureCLI@2
+            displayName: 'OpenTofu Init + Validate + Plan'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_USE_OIDC=true
+                export ARM_USE_AZUREAD=true
+                export ARM_SUBSCRIPTION_ID="$(ARM_SUBSCRIPTION_ID)"
+                export TF_VAR_vm_admin_password="$(VM_ADMIN_PASSWORD)"
+
+                cd "$(TF_WORKING_DIR)"
+                rm -rf .terraform
+
+                timeout 120 tofu init -reconfigure \
+                  -backend-config=resource_group_name=$(TF_STATE_RG) \
+                  -backend-config=storage_account_name=$(TF_STATE_STORAGE) \
+                  -backend-config=container_name=tfstate \
+                  -backend-config=key=dpn.tfstate \
+                  -backend-config=use_azuread_auth=true \
+                  || { echo "##vso[task.logissue type=error]tofu init failed - verify the agent has network line-of-sight to the tfstate storage private endpoint"; exit 1; }
+
+                tofu validate
+                echo "OK: OpenTofu configuration is valid"
+
+                TARGET_ARGS=""
+                if [ -n "${{ parameters.targetModule }}" ]; then
+                  IFS=',' read -ra TARGET_LIST <<< "${{ parameters.targetModule }}"
+                  for t in "${TARGET_LIST[@]}"; do
+                    t="$(echo "$t" | xargs)"
+                    [ -n "$t" ] && TARGET_ARGS="$TARGET_ARGS -target=$t"
+                  done
+                  echo "Scoping plan to: ${{ parameters.targetModule }}"
+                fi
+
+                set +o pipefail
+                tofu plan $TARGET_ARGS -var-file=environments/dpn_infrastructure.tfvars -out=tfplan -input=false -no-color 2>&1 | tee plan-output.txt; PLAN_RC=${PIPESTATUS[0]}
+                set -o pipefail
+                if [ "$PLAN_RC" != "0" ]; then echo "##vso[task.logissue type=error]tofu plan failed with exit code $PLAN_RC"; exit $PLAN_RC; fi
+
+                if grep -q "Plan:" plan-output.txt; then
+                  echo "Infrastructure changes detected:"
+                  grep "Plan:" plan-output.txt
+                else
+                  echo "No infrastructure changes required"
+                fi
+
+  # ===========================================================================
+  # Stage 3: Manual Approval Gate
+  # Requires an Azure DevOps Environment named 'dpn-approval' with an
+  # Approvals check configured (Pipelines -> Environments -> ... ->
+  # Approvals and checks).
+  # ===========================================================================
+  - stage: Approve
+    displayName: 'Manual Approval'
+    dependsOn: Plan
+    condition: |
+      and(
+        succeeded(),
+        eq('${{ parameters.action }}', 'apply'),
+        eq(${{ parameters.requireApproval }}, true)
+      )
+    jobs:
+      - deployment: ApprovalGate
+        displayName: 'Manual Approval'
+        environment: 'dpn-approval'
+        strategy:
+          runOnce:
+            deploy:
+              steps:
+                - bash: echo "Manual approval received. Proceeding with OpenTofu Apply."
+                  displayName: 'Approval granted'
+
+  # ===========================================================================
+  # Stage 4: OpenTofu Apply
+  # ===========================================================================
+  - stage: Apply
+    displayName: 'OpenTofu Apply'
+    dependsOn:
+      - Plan
+      - Approve
+    condition: |
+      and(
+        in(dependencies.Plan.result, 'Succeeded'),
+        in(dependencies.Approve.result, 'Succeeded', 'Skipped'),
+        eq('${{ parameters.action }}', 'apply')
+      )
+    jobs:
+      - job: OpenTofuApply
+        displayName: 'OpenTofu Apply'
+        steps:
+          - checkout: self
+
+          - bash: |
+              set -e
+              curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+              chmod +x install-opentofu.sh
+              ./install-opentofu.sh --install-method standalone --opentofu-version "$(TOFU_VERSION)"
+              tofu --version
+            displayName: 'Install OpenTofu $(TOFU_VERSION)'
+
+          - task: AzureCLI@2
+            displayName: 'OpenTofu Apply'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_USE_OIDC=true
+                export ARM_USE_AZUREAD=true
+                export ARM_SUBSCRIPTION_ID="$(ARM_SUBSCRIPTION_ID)"
+                export TF_VAR_vm_admin_password="$(VM_ADMIN_PASSWORD)"
+
+                cd "$(TF_WORKING_DIR)"
+                rm -rf .terraform
+                timeout 600 tofu init \
+                  -backend-config=resource_group_name=$(TF_STATE_RG) \
+                  -backend-config=storage_account_name=$(TF_STATE_STORAGE) \
+                  -backend-config=container_name=tfstate \
+                  -backend-config=key=dpn.tfstate \
+                  -backend-config=use_azuread_auth=true \
+                  || { echo "##vso[task.logissue type=error]tofu init failed"; exit 1; }
+
+                [ -f environments/dpn_infrastructure.tfvars ] || { echo "##vso[task.logissue type=error]environments/dpn_infrastructure.tfvars not found"; exit 1; }
+
+                TARGET_ARGS=""
+                if [ -n "${{ parameters.targetModule }}" ]; then
+                  IFS=',' read -ra TARGET_LIST <<< "${{ parameters.targetModule }}"
+                  for t in "${TARGET_LIST[@]}"; do
+                    t="$(echo "$t" | xargs)"
+                    [ -n "$t" ] && TARGET_ARGS="$TARGET_ARGS -target=$t"
+                  done
+                  echo "Scoping apply to: ${{ parameters.targetModule }}"
+                fi
+
+                set +e
+                tofu apply $TARGET_ARGS -var-file=environments/dpn_infrastructure.tfvars -parallelism=4 -auto-approve -no-color 2>&1
+                APPLY_RC=$?
+                set -e
+                [ "$APPLY_RC" != "0" ] && { echo "##vso[task.logissue type=error]tofu apply failed with exit code $APPLY_RC"; exit 1; }
+                echo "OpenTofu apply completed"
+
+  # ===========================================================================
+  # Stage 5: Post-Deployment Verification
+  # ===========================================================================
+  - stage: Verify
+    displayName: 'Post-Deployment Verification'
+    dependsOn: Apply
+    condition: and(succeeded(), eq('${{ parameters.action }}', 'apply'))
+    jobs:
+      - job: PostDeploymentVerification
+        displayName: 'Post-Deployment Verification'
+        steps:
+          - checkout: self
+
+          - bash: |
+              set -e
+              curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+              chmod +x install-opentofu.sh
+              ./install-opentofu.sh --install-method standalone --opentofu-version "$(TOFU_VERSION)"
+            displayName: 'Install OpenTofu $(TOFU_VERSION)'
+
+          - task: AzureCLI@2
+            displayName: 'Verify Terraform Outputs'
+            inputs:
+              azureSubscription: '${{ parameters.serviceConnection }}'
+              scriptType: bash
+              scriptLocation: inlineScript
+              inlineScript: |
+                set -e
+                export ARM_CLIENT_ID="$servicePrincipalId"
+                export ARM_TENANT_ID="$tenantId"
+                export ARM_OIDC_TOKEN="$idToken"
+                export ARM_USE_OIDC=true
+                export ARM_USE_AZUREAD=true
+                export ARM_SUBSCRIPTION_ID="$(ARM_SUBSCRIPTION_ID)"
+
+                cd "$(TF_WORKING_DIR)"
+                timeout 120 tofu init -reconfigure \
+                  -backend-config=resource_group_name=$(TF_STATE_RG) \
+                  -backend-config=storage_account_name=$(TF_STATE_STORAGE) \
+                  -backend-config=container_name=tfstate \
+                  -backend-config=key=dpn.tfstate \
+                  -backend-config=use_azuread_auth=true \
+                  || { echo "##vso[task.logissue type=error]tofu init failed"; exit 1; }
+
+                OUTPUTS=$(tofu output -json)
+                echo "$OUTPUTS" | jq -r 'to_entries[] | "\(.key): \(.value.value)"'
+
+                MISSING=0
+                for key in vnet_id log_analytics_workspace_id keyvault_id acr_id aks_cluster_id dev_storage_account_id; do
+                  VALUE=$(echo "$OUTPUTS" | jq -r --arg k "$key" '.[$k].value // empty')
+                  if [ -z "$VALUE" ]; then
+                    echo "##vso[task.logissue type=error]Expected output '$key' is missing or empty"
+                    MISSING=1
+                  fi
+                done
+                if [ "$MISSING" != "0" ]; then exit 1; fi
+                echo "All expected outputs are present"
