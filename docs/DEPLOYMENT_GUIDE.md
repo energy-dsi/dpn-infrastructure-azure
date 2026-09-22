@@ -25,7 +25,7 @@ Edit `dpn-azure-infrastructure/environments/dpn_infrastructure.tfvars` directly 
 - Subscription IDs, tenant-specific object IDs (currently `00000000-0000-0000-0000-000000000000` placeholders)
 - Resource names (the example uses a `<type>-dpn-azure-<region>-<instance>` convention - keep your own convention consistent, the exact names don't matter)
 - CIDR ranges in the `subnets` map - must fit inside your existing VNet's address space and not collide with anything already using it
-- `keyvault_initial_keys` / `keyvault_initial_secrets` - the example includes one CMK (`cmk-key`) used to encrypt every resource that supports customer-managed keys. Set a real `expiration_date` on every key/secret you add (see `modules/keyvault/README.md`).
+- `keyvault_initial_keys` / `keyvault_initial_secrets` - the example includes one CMK (`cmk-key`) used to encrypt every resource that supports customer-managed keys. Keys rotate on the `rotation_time_before_expiry`/`rotation_expire_after`/`rotation_notify_before_expiry` policy set on each entry - there's no `expiration_date` field on keys or secrets in this module's Key Vault (see `modules/keyvault/README.md`).
 
 If your workload doesn't need the file-scanning pattern described in the root `README.md`, remove the `event_grid`, `service_bus`, and `file_scanning_storage` module blocks from `dpn-azure-infrastructure/main.tf` and their corresponding variables from `dpn_infrastructure.tfvars` - see that README for what those modules are for before deciding.
 
