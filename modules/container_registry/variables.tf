@@ -57,11 +57,6 @@ variable "vnet_resource_group_name" {
   description = "Resource group name of the existing Virtual Network"
 }
 
-variable "vnet_subnet_name" {
-  type        = string
-  description = "Name of the subnet for the container registry private endpoint"
-}
-
 variable "network_rules_enabled" {
   type        = bool
   description = "Enable network rules for the container registry"
@@ -95,10 +90,9 @@ variable "retention_policy_days" {
   }
 }
 
-variable "quarantine_policy_enabled" {
+variable "trust_policy_enabled" {
   type        = bool
-  default     = false
-  description = "Enable quarantine policy (Premium SKU only). Every pushed image is held in a locked, unpullable state until an external scanning integration explicitly marks it as passed. Only enable this if you have such an integration wired up - otherwise every pushed image becomes permanently stuck and undeployable."
+  description = "Enable trust policy (Docker Content Trust) for the container registry (Premium SKU only)"
 }
 
 variable "encryption_enabled" {
@@ -109,12 +103,6 @@ variable "encryption_enabled" {
 variable "key_vault_key_id" {
   type        = string
   description = "Key Vault key ID for customer-managed encryption"
-}
-
-variable "key_vault_id" {
-  type        = string
-  description = "Resource ID of the Key Vault holding key_vault_key_id. Required when encryption_enabled is true — the module grants the ACR's encryption identity Key Vault Crypto Service Encryption User on this vault so it can wrap/unwrap the CMK."
-  default     = null
 }
 
 variable "georeplications" {
@@ -138,26 +126,15 @@ variable "webhooks" {
     custom_headers = map(string)
   }))
   description = "Map of webhooks to create"
-
-  validation {
-    condition     = alltrue([for w in values(var.webhooks) : startswith(w.service_uri, "https://")])
-    error_message = "Every webhook service_uri must use https://."
-  }
 }
 
-variable "private_dns_zone_subscription_id" {
-  description = "Subscription ID hosting your private DNS zones"
+variable "connectivity_subscription_id" {
+  description = "Subscription ID for the connectivity platform (Private DNS zones)"
   type        = string
 }
 variable "private_dns_zone_resource_group" {
-  description = "Resource group name where private DNS zones are located"
+  description = "Resource group name where private DNS zones are located in connectivity subscription"
   type        = string
-}
-
-variable "acr_private_dns_zone_id" {
-  description = "Full ARM resource ID of the privatelink.azurecr.io Private DNS zone. When set, OpenTofu manages the private_dns_zone_group so A records land in the correct zone."
-  type        = string
-  default     = null
 }
 
 variable "tags" {
@@ -178,4 +155,14 @@ variable "log_analytics_resource_group_name" {
 variable "enable_diagnostic_settings" {
   description = "Enable diagnostic settings for Container Registry"
   type        = bool
+}
+
+variable "subnet_id" {
+  description = "Subnet ID for Container Registry private endpoint"
+  type        = string
+}
+
+variable "log_analytics_workspace_id" {
+  description = "Log Analytics workspace ID for diagnostic settings"
+  type        = string
 }

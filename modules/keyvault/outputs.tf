@@ -35,7 +35,12 @@ output "private_endpoint_ip_address" {
 
 output "keyvault_subnet_id" {
   description = "The ID of the Key Vault subnet"
-  value       = local.kv_subnet_id
+  value       = var.subnet_id
+}
+
+output "private_dns_zone_id" {
+  description = "The ID of the private DNS zone"
+  value       = data.azurerm_private_dns_zone.keyvault.id
 }
 
 output "secret_ids" {
@@ -46,4 +51,9 @@ output "secret_ids" {
 output "key_ids" {
   description = "Map of key names to their IDs"
   value       = { for k, v in azurerm_key_vault_key.keys : k => v.id }
+}
+
+output "certificate_ids" {
+  description = "Map of certificate names to their IDs"
+  value       = { for k, v in azurerm_key_vault_certificate.certificates : k => v.id }
 }

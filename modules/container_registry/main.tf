@@ -10,7 +10,8 @@
 terraform {
   required_providers {
     azurerm = {
-      source = "hashicorp/azurerm"
+      source                = "hashicorp/azurerm"
+      configuration_aliases = [azurerm.connectivity]
     }
   }
 }
@@ -22,6 +23,10 @@ resource "azurerm_resource_group" "acr" {
   name     = var.resource_group_name
   location = var.location
   tags     = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -36,19 +41,13 @@ resource "azurerm_container_registry" "acr" {
   admin_enabled                 = var.admin_enabled
   public_network_access_enabled = var.public_network_access_enabled
   zone_redundancy_enabled       = var.sku == "Premium" ? var.zone_redundancy_enabled : false
-  # CKV_AZURE_167/237: retention policy and dedicated data endpoints are
-  # Premium-only and safe to enable unconditionally on Premium - neither
-  # changes push/pull behavior.
-  #
-  # CKV_AZURE_166 (quarantine policy) is deliberately NOT enabled the same
-  # way. Quarantine holds every pushed image in a locked, unpullable state
-  # until an external scanning integration explicitly marks it as passed -
-  # without that integration wired up, every image pushed to the registry
-  # becomes permanently stuck and undeployable. This codebase does not
-  # provide that integration, so quarantine defaults off; only enable
-  # var.quarantine_policy_enabled if you have a scanning pipeline that
-  # clears quarantined images.
-  quarantine_policy_enabled = var.sku == "Premium" && var.quarantine_policy_enabled
+  # CKV_AZURE_166: REVERTED 2026-07-27 — quarantine holds every newly pushed image
+  # until an external scanner (Qualys/Defender integration) explicitly releases it.
+  # No such scanner is wired in this repo, so every image pushed since this was
+  # enabled got stuck in quarantine and became unpullable by AKS - this broke the
+  # dev team's ability to deploy. Soft-failing this check instead of enabling it
+  # blind; re-enable only alongside an actual scanner integration.
+  quarantine_policy_enabled = false
   retention_policy_in_days  = var.sku == "Premium" && var.retention_policy_enabled ? var.retention_policy_days : null
   data_endpoint_enabled     = var.sku == "Premium"
   tags                      = var.tags
@@ -68,20 +67,9 @@ resource "azurerm_container_registry" "acr" {
     }
   }
 
-  # CKV_AZURE_165: geo-replication (Premium SKU only). Empty by default - replicating
-  # to another region roughly doubles registry storage cost and requires choosing a
-  # target region, so this stays an explicit customer opt-in via var.georeplications.
-  dynamic "georeplications" {
-    for_each = var.sku == "Premium" ? var.georeplications : {}
-    content {
-      location                  = georeplications.value.location
-      zone_redundancy_enabled   = georeplications.value.zone_redundancy_enabled
-      regional_endpoint_enabled = true
-      tags                      = var.tags
-    }
+  lifecycle {
+    prevent_destroy = true
   }
-
-  depends_on = [azurerm_role_assignment.acr_cmk]
 }
 
 # ------------------------------------------------------------------------------
@@ -95,16 +83,6 @@ resource "azurerm_user_assigned_identity" "acr" {
   tags                = var.tags
 }
 
-# Grants the ACR encryption identity permission to wrap/unwrap the CMK.
-# Without this, enabling encryption_enabled fails at apply time with 403
-# when ACR tries to use the key.
-resource "azurerm_role_assignment" "acr_cmk" {
-  count                = var.encryption_enabled && var.key_vault_id != null ? 1 : 0
-  scope                = var.key_vault_id
-  role_definition_name = "Key Vault Crypto Service Encryption User"
-  principal_id         = azurerm_user_assigned_identity.acr[0].principal_id
-}
-
 # ------------------------------------------------------------------------------
 # Private Endpoint
 # ------------------------------------------------------------------------------
@@ -112,7 +90,7 @@ resource "azurerm_private_endpoint" "acr" {
   name                = "${var.acr_name}-pe"
   location            = var.location
   resource_group_name = azurerm_resource_group.acr.name
-  subnet_id           = data.azurerm_subnet.acr.id
+  subnet_id           = var.subnet_id
   tags                = var.tags
 
   private_service_connection {
@@ -122,18 +100,14 @@ resource "azurerm_private_endpoint" "acr" {
     subresource_names              = ["registry"]
   }
 
-  dynamic "private_dns_zone_group" {
-    for_each = var.acr_private_dns_zone_id != null ? [1] : []
-    content {
-      name                 = "default"
-      private_dns_zone_ids = [var.acr_private_dns_zone_id]
-    }
-  }
+  # NOTE: private_dns_zone_group is intentionally NOT defined here
+  # Azure Policy automatically creates the DNS zone group
+  # Defining it here causes "MoreThanOnePrivateDnsZoneGroupPerPrivateEndpointNotAllowed" errors
 
   lifecycle {
     ignore_changes = [
-      tags,
-      subnet_id
+      private_dns_zone_group,
+      tags
     ]
   }
 
@@ -145,7 +119,7 @@ resource "azurerm_monitor_diagnostic_setting" "acr_diagnostic" {
   count                      = var.enable_diagnostic_settings ? 1 : 0
   name                       = "${var.acr_name}-diagnostic"
   target_resource_id         = azurerm_container_registry.acr.id
-  log_analytics_workspace_id = data.azurerm_log_analytics_workspace.log_analytics.id
+  log_analytics_workspace_id = var.log_analytics_workspace_id
 
   enabled_log {
     category_group = "allLogs"

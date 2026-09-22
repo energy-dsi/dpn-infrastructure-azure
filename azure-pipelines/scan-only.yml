@@ -1,0 +1,191 @@
+# ==============================================================================
+# Compliance Scan (Checkov / Trivy / TFLint) - Azure DevOps
+# ==============================================================================
+# Read-only quality/compliance visibility for a customer scanning tool that
+# inventories Azure DevOps pipelines. Does NOT touch Azure, does NOT deploy
+# anything, and does NOT need a service connection - it only checks out this
+# repository's own content and runs the same three scanners documented in
+# docs/TESTING_AND_VALIDATION.md and docs/SECURITY_AND_COMPLIANCE.md:
+#   - TFLint   (repo-wide, .tflint.hcl at root)
+#   - Trivy    (misconfig scan, dpn-azure-infrastructure with its example
+#               dpn_infrastructure.tfvars)
+#   - Checkov  (repo-wide, .checkov.yaml at root, same tfvars)
+#
+# All three run in report-only mode (soft-fail / exit-code 0) - findings are
+# surfaced, not blocking.
+#
+# SETUP - two cases depending on where ADO checks this out from:
+#
+#   Source is this repo's own Azure DevOps remote:
+#     Pipelines -> New pipeline -> Azure Repos Git -> this repository ->
+#     Existing Azure Pipelines YAML file -> azure-pipelines/scan-only.yml.
+#     No GitHub connection needed at all.
+#
+#   Source is a GitHub-hosted copy of this codebase (e.g.
+#   github.com/NESO-MF/NESO-DSI-DPN-INFRA-PART-Azure):
+#     ADO must first be connected to that GitHub repo (Azure Pipelines
+#     GitHub App, or a PAT-based GitHub service connection) - see
+#     docs/DEPLOYMENT_GUIDE.md / project chat history for the walkthrough.
+#     ADO can only run a YAML file that exists IN the GitHub repo itself, on
+#     the branch the pipeline is pointed at, so this file must be committed
+#     and pushed to that branch before it can be selected as "Existing YAML
+#     file" in New pipeline.
+#
+# Either way, no service connection, variable group, or environment approval
+# is needed for this pipeline itself - it never touches Azure.
+# ==============================================================================
+
+name: 'Compliance Scan - Checkov, Trivy, TFLint ($(Date:yyyyMMdd)$(Rev:.r))'
+
+trigger:
+  branches:
+    include:
+      - main
+      - dpn-participants-0.9.0
+  paths:
+    include:
+      - 'dpn-azure-infrastructure/**'
+      - 'modules/**'
+      - '.checkov.yaml'
+      - '.tflint.hcl'
+      - '.trivyignore'
+      - 'azure-pipelines/scan-only.yml'
+pr: none
+
+variables:
+  TOFU_VERSION: '1.9.0'
+  TFLINT_VERSION: '0.64.0'
+  TRIVY_VERSION: '0.72.0'
+  CHECKOV_VERSION: '3.3.8'
+  TF_WORKING_DIR: 'dpn-azure-infrastructure'
+  TFVARS_FILE: 'environments/dpn_infrastructure.tfvars'
+  REPORTS_DIR: '$(Agent.TempDirectory)/quality-reports-$(Build.BuildId)'
+
+# This ADO project has no Microsoft-hosted agent pool available (vmImage
+# fails with "No pool was specified"), so this runs on the same self-hosted
+# pool as the deploy pipelines. None of these three scanners actually need
+# private network line-of-sight - self-hosted is used here only because
+# it's the pool that exists, not because the job requires it.
+pool:
+  name: 'ADO-Linux-Prd-UKS-AgentPool'
+
+stages:
+  - stage: Scan
+    displayName: 'Checkov / Trivy / TFLint'
+    jobs:
+      - job: ComplianceScan
+        displayName: 'Run compliance scanners'
+        steps:
+          - checkout: self
+
+          - bash: mkdir -p "$(REPORTS_DIR)"
+            displayName: 'Create reports directory'
+
+          - bash: |
+              set -e
+              curl -fsSL https://get.opentofu.org/install-opentofu.sh -o install-opentofu.sh
+              chmod +x install-opentofu.sh
+              ./install-opentofu.sh --install-method standalone --opentofu-version "$(TOFU_VERSION)"
+              tofu --version
+            displayName: 'Install OpenTofu $(TOFU_VERSION)'
+
+          - bash: |
+              set +e
+              cd "$(TF_WORKING_DIR)"
+              tofu init -backend=false >/dev/null && tofu validate \
+                && echo "OK: dpn-azure-infrastructure valid" \
+                || echo "WARN: dpn-azure-infrastructure failed validate"
+            displayName: 'OpenTofu Validate'
+            continueOnError: true
+
+          - bash: |
+              set +o pipefail
+              TFLINT_URL="https://github.com/terraform-linters/tflint/releases/download/v$(TFLINT_VERSION)/tflint_linux_amd64.zip"
+              mkdir -p "$HOME/.local/bin"
+              for i in 1 2 3; do
+                curl -sL -o /tmp/tflint.zip "$TFLINT_URL" && unzip -o -q /tmp/tflint.zip -d "$HOME/.local/bin" && break
+                echo "TFLint download/extract attempt $i failed, retrying in 5s..."
+                sleep 5
+              done
+              chmod +x "$HOME/.local/bin/tflint" 2>/dev/null || true
+              export PATH="$HOME/.local/bin:$PATH"
+              if ! command -v tflint >/dev/null 2>&1; then
+                echo "##vso[task.logissue type=warning]TFLint did not install after 3 attempts"
+                exit 0
+              fi
+              tflint --config "$(Build.SourcesDirectory)/.tflint.hcl" --recursive --chdir "$(TF_WORKING_DIR)" --format compact 2>&1 | tee "$(REPORTS_DIR)/tflint-report.txt" \
+                && echo "OK: TFLint passed" || echo "WARN: TFLint found issues"
+            displayName: 'TFLint - repo-wide'
+            continueOnError: true
+
+          - bash: |
+              TRIVY_ASSET="trivy_$(TRIVY_VERSION)_Linux-64bit.tar.gz"
+              TRIVY_URL="https://github.com/aquasecurity/trivy/releases/download/v$(TRIVY_VERSION)/${TRIVY_ASSET}"
+              mkdir -p "$HOME/.local/bin"
+              for _attempt in 1 2 3; do
+                if curl -sSfL -o "/tmp/${TRIVY_ASSET}" "$TRIVY_URL" && tar -xzf "/tmp/${TRIVY_ASSET}" -C "$HOME/.local/bin" trivy; then
+                  chmod +x "$HOME/.local/bin/trivy"; break
+                fi
+                echo "Trivy install attempt $_attempt failed, retrying in 5s..."
+                sleep 5
+              done
+              export PATH="$HOME/.local/bin:$PATH"
+              if ! command -v trivy >/dev/null 2>&1; then
+                echo "##vso[task.logissue type=warning]Trivy did not install after 3 attempts"
+                exit 0
+              fi
+
+              trivy fs "$(TF_WORKING_DIR)" --scanners misconfig \
+                  --tf-vars "$(TF_WORKING_DIR)/$(TFVARS_FILE)" \
+                  --ignorefile "$(Build.SourcesDirectory)/.trivyignore" \
+                  --format table --exit-code 0 \
+                && echo "OK: Trivy passed" || echo "WARN: Trivy found issues"
+              trivy fs "$(TF_WORKING_DIR)" --scanners misconfig \
+                  --tf-vars "$(TF_WORKING_DIR)/$(TFVARS_FILE)" \
+                  --ignorefile "$(Build.SourcesDirectory)/.trivyignore" \
+                  --format json --output "$(REPORTS_DIR)/trivy-report.json" --exit-code 0 || true
+            displayName: 'Trivy - misconfig scan'
+            continueOnError: true
+
+          - bash: |
+              if command -v pip3 >/dev/null 2>&1; then
+                pip3 install "checkov==$(CHECKOV_VERSION)" --quiet --no-warn-script-location --user
+              else
+                curl -sS https://bootstrap.pypa.io/get-pip.py -o /tmp/get-pip.py
+                python3 /tmp/get-pip.py --user --quiet
+                python3 -m pip install "checkov==$(CHECKOV_VERSION)" --quiet --no-warn-script-location --user
+              fi
+              export PATH="$HOME/.local/bin:$PATH"
+
+              # --var-file resolves relative to the current working directory, not
+              # to -d - it must include the dpn-azure-infrastructure/ prefix when
+              # run from the repo root. Dropping that prefix silently loads the
+              # wrong values instead of erroring (see .checkov.yaml's own header
+              # comment for the same gotcha).
+              checkov -d "$(TF_WORKING_DIR)" --framework terraform \
+                  --var-file "$(TF_WORKING_DIR)/$(TFVARS_FILE)" \
+                  --config-file "$(Build.SourcesDirectory)/.checkov.yaml" \
+                  --compact --soft-fail --output json > "$(REPORTS_DIR)/checkov-report.json"
+              [ ${PIPESTATUS[0]:-$?} -eq 0 ] && echo "OK: Checkov passed" || echo "WARN: Checkov found issues"
+
+              # Human-readable CLI report alongside the JSON one
+              checkov -d "$(TF_WORKING_DIR)" --framework terraform \
+                  --var-file "$(TF_WORKING_DIR)/$(TFVARS_FILE)" \
+                  --config-file "$(Build.SourcesDirectory)/.checkov.yaml" \
+                  --compact --soft-fail > "$(REPORTS_DIR)/checkov-report.txt" || true
+            displayName: 'Checkov - compliance scan'
+            continueOnError: true
+
+          - bash: |
+              echo "Reports generated in $(REPORTS_DIR):"
+              ls -la "$(REPORTS_DIR)" 2>/dev/null || true
+            displayName: 'Quality Reports Summary'
+            condition: always()
+
+          - task: PublishPipelineArtifact@1
+            displayName: 'Publish quality-reports artifact'
+            condition: always()
+            inputs:
+              targetPath: '$(REPORTS_DIR)'
+              artifact: 'quality-reports'
+              publishLocation: 'pipeline'

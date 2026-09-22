@@ -42,26 +42,24 @@ resource "azurerm_network_interface_security_group_association" "vm" {
 
 # Windows Virtual Machine
 resource "azurerm_windows_virtual_machine" "vm" {
-  name                       = var.vm_name
-  computer_name              = var.computer_name
-  location                   = azurerm_resource_group.vm.location
-  resource_group_name        = azurerm_resource_group.vm.name
-  size                       = var.vm_size
-  admin_username             = var.admin_username
-  admin_password             = var.admin_password
-  allow_extension_operations = var.allow_extension_operations
-  tags                       = var.tags
+  name                = var.vm_name
+  computer_name       = var.computer_name
+  location            = azurerm_resource_group.vm.location
+  resource_group_name = azurerm_resource_group.vm.name
+  size                = var.vm_size
+  admin_username      = var.admin_username
+  admin_password      = var.admin_password
+  tags                = var.tags
 
   network_interface_ids = [
     azurerm_network_interface.vm.id,
   ]
 
   os_disk {
-    name                   = "${var.vm_name}-osdisk"
-    caching                = var.os_disk_caching
-    storage_account_type   = var.os_disk_storage_account_type
-    disk_size_gb           = var.os_disk_size_gb
-    disk_encryption_set_id = var.encryption_enabled ? azurerm_disk_encryption_set.vm[0].id : null
+    name                 = "${var.vm_name}-osdisk"
+    caching              = var.os_disk_caching
+    storage_account_type = var.os_disk_storage_account_type
+    disk_size_gb         = var.os_disk_size_gb
   }
 
   source_image_reference {
@@ -98,47 +96,22 @@ resource "azurerm_windows_virtual_machine" "vm" {
   license_type                                           = var.license_type
   timezone                                               = var.timezone
   zone                                                   = var.availability_zone
-
-  depends_on = [azurerm_role_assignment.disk_encryption_set_cmk]
 }
 
-# ------------------------------------------------------------------------------
-# Customer-managed key support for the OS disk
-# ------------------------------------------------------------------------------
-resource "azurerm_disk_encryption_set" "vm" {
-  count               = var.encryption_enabled ? 1 : 0
-  name                = "${var.vm_name}-des"
-  resource_group_name = azurerm_resource_group.vm.name
-  location            = azurerm_resource_group.vm.location
-  key_vault_key_id    = var.key_vault_key_id
-  tags                = var.tags
+resource "azurerm_key_vault_secret" "vm_password" {
+  name            = "${var.vm_name}-admin-password"
+  value           = var.admin_password
+  content_type    = "text/plain" # CKV_AZURE_114: metadata only, no functional effect
+  key_vault_id    = var.key_vault_id
+  expiration_date = timeadd(timestamp(), var.vm_password_secret_expiration_duration)
+  tags            = var.tags
 
-  identity {
-    type = "SystemAssigned"
+  lifecycle {
+    ignore_changes = [expiration_date]
   }
-}
 
-# Grants the disk encryption set's identity permission to wrap/unwrap the CMK.
-# Without this, enabling encryption_enabled fails at apply time with 403
-# when the platform tries to use the key.
-resource "azurerm_role_assignment" "disk_encryption_set_cmk" {
-  count                = var.encryption_enabled ? 1 : 0
-  scope                = var.key_vault_id
-  role_definition_name = "Key Vault Crypto Service Encryption User"
-  principal_id         = azurerm_disk_encryption_set.vm[0].identity[0].principal_id
+  depends_on = [azurerm_windows_virtual_machine.vm]
 }
-
-# Store VM password in Key Vault
-# NOTE: Commented out because pipeline agent cannot access Key Vault over network (private infrastructure)
-# Password must be stored manually after deployment or retrieved from Azure Portal
-# resource "azurerm_key_vault_secret" "vm_password" {
-#   name         = "${var.vm_name}-admin-password"
-#   value        = var.admin_password
-#   key_vault_id = var.key_vault_id
-#   tags         = var.tags
-#
-#   depends_on = [azurerm_windows_virtual_machine.vm]
-# }
 
 # Diagnostic Settings
 resource "azurerm_monitor_diagnostic_setting" "vm" {
@@ -151,24 +124,4 @@ resource "azurerm_monitor_diagnostic_setting" "vm" {
   enabled_metric {
     category = "AllMetrics"
   }
-}
-
-# ========================================
-# RBAC: Reader on the VM and its NIC
-# ========================================
-# Required by Azure Bastion to let a principal select this VM in the connect
-# flow — Bastion access alone (Reader here) does not authenticate the user
-# into Windows; that still requires the VM's own admin credentials.
-resource "azurerm_role_assignment" "vm_reader" {
-  for_each             = toset(var.reader_principal_ids)
-  scope                = azurerm_windows_virtual_machine.vm.id
-  role_definition_name = "Reader"
-  principal_id         = each.value
-}
-
-resource "azurerm_role_assignment" "nic_reader" {
-  for_each             = toset(var.reader_principal_ids)
-  scope                = azurerm_network_interface.vm.id
-  role_definition_name = "Reader"
-  principal_id         = each.value
 }

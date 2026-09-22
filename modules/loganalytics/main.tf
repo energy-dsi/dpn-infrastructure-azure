@@ -10,7 +10,8 @@
 terraform {
   required_providers {
     azurerm = {
-      source = "hashicorp/azurerm"
+      source                = "hashicorp/azurerm"
+      configuration_aliases = [azurerm.connectivity]
     }
   }
 }
@@ -42,6 +43,10 @@ resource "azurerm_log_analytics_workspace" "log_analytics" {
   }
 }
 
-# Note: AMPLS (Azure Monitor Private Link Scope) is deployed via modules/ampls
-# in each environment root, after both networking and loganalytics, to avoid
-# a circular dependency (networking → loganalytics workspace ID → networking subnet ID).
+# ------------------------------------------------------------------------------
+# Note: Log Analytics Workspace Private Endpoint Not Implemented
+# ------------------------------------------------------------------------------
+# Log Analytics is secure by default:
+# - All traffic encrypted over HTTPS
+# - Access controlled via Azure RBAC
+# - Accessed through Azure backbone network

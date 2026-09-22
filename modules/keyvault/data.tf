@@ -1,21 +1,8 @@
-data "azurerm_log_analytics_workspace" "log_analytics" {
-  count               = var.bypass_data_sources ? 0 : 1
-  name                = var.log_analytics_workspace_name
-  resource_group_name = var.log_analytics_resource_group_name
-}
-
-# Data source to reference existing VNet
-data "azurerm_virtual_network" "vnet" {
-  name                = var.vnet_name
-  resource_group_name = var.vnet_resource_group_name
-}
-
-# Data source to reference Key Vault subnet
-data "azurerm_subnet" "keyvault" {
-  count                = var.bypass_data_sources ? 0 : 1
-  name                 = var.vnet_subnet_name
-  virtual_network_name = var.vnet_name
-  resource_group_name  = var.vnet_resource_group_name
+# Data source to reference Key Vault private DNS zone from connectivity subscription
+data "azurerm_private_dns_zone" "keyvault" {
+  name                = "privatelink.vaultcore.azure.net"
+  resource_group_name = var.private_dns_zone_resource_group
+  provider            = azurerm.connectivity
 }
 
 data "azurerm_client_config" "current" {}

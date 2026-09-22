@@ -107,7 +107,7 @@ variable "log_analytics_identity_type" {
   type        = string
 }
 
-variable "private_dns_zone_subscription_id" {
+variable "connectivity_subscription_id" {
   description = "Subscription ID where central Private DNS zones are located"
   type        = string
 }
@@ -217,25 +217,35 @@ variable "keyvault_secrets_user_object_ids" {
 }
 
 variable "keyvault_initial_secrets" {
-  description = "Map of initial secrets to create in Key Vault. Set expiration_date (RFC3339) on every entry - secrets without one never expire."
-  type = map(object({
-    value           = string
-    expiration_date = optional(string)
-  }))
+  description = "Map of initial secrets to create in Key Vault"
+  type        = map(string)
 }
 
 variable "keyvault_initial_keys" {
-  description = "Map of initial keys to create in Key Vault. Set expiration_date (RFC3339) on every entry - keys without one never expire."
+  description = "Map of initial keys to create in Key Vault"
   type = map(object({
     key_type                      = string
     key_size                      = number
     key_opts                      = list(string)
-    expiration_date               = optional(string)
-    enable_rotation               = optional(bool, true)
+    enable_rotation               = bool
     rotation_time_before_expiry   = optional(string, "P30D")
     rotation_expire_after         = optional(string, "P90D")
     rotation_notify_before_expiry = optional(string, "P29D")
   }))
+}
+
+variable "keyvault_initial_certificates" {
+  description = "Map of self-signed certificates to create in the Key Vault (e.g. a Notation image-signing certificate)"
+  type = map(object({
+    key_type                 = string
+    key_size                 = number
+    exportable               = bool
+    key_usage                = list(string)
+    subject                  = string
+    validity_in_months       = number
+    renew_days_before_expiry = number
+  }))
+  default = {}
 }
 
 variable "acr_name" {
@@ -278,10 +288,9 @@ variable "acr_retention_policy_days" {
   type        = number
 }
 
-variable "acr_quarantine_policy_enabled" {
-  description = "Enable ACR quarantine policy (Premium SKU only). Every pushed image is held in a locked, unpullable state until an external scanning integration explicitly marks it as passed. Only enable this if you have such an integration wired up - otherwise every pushed image becomes permanently stuck and undeployable."
+variable "acr_trust_policy_enabled" {
+  description = "Enable trust policy (Docker Content Trust) for ACR (Premium SKU only)"
   type        = bool
-  default     = false
 }
 
 variable "acr_georeplications" {
@@ -318,6 +327,11 @@ variable "acr_encryption_enabled" {
   type        = bool
 }
 
+variable "acr_key_vault_key_id" {
+  description = "Key Vault key ID for ACR encryption"
+  type        = string
+}
+
 variable "acr_create_scope_maps" {
   description = "Create default scope maps for ACR"
   type        = bool
@@ -352,6 +366,8 @@ variable "aks_node_resource_group" {
 variable "aks_private_cluster_enabled" {
   description = "Enable private cluster (API server accessible only via private endpoint)"
   type        = bool
+  # ForceNew if changed; every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "aks_enable_diagnostic_settings" {
@@ -361,16 +377,6 @@ variable "aks_enable_diagnostic_settings" {
 
 variable "aks_vnet_subnet_name" {
   description = "Name of the subnet where AKS nodes will be deployed"
-  type        = string
-}
-
-variable "keyvault_vnet_subnet_name" {
-  description = "Name of the subnet for the Key Vault private endpoint"
-  type        = string
-}
-
-variable "acr_vnet_subnet_name" {
-  description = "Name of the subnet for the ACR private endpoint"
   type        = string
 }
 
@@ -385,7 +391,7 @@ variable "aks_private_dns_zone_id" {
 }
 
 variable "aks_admin_group" {
-  description = "Object IDs of Azure AD groups/principals granted AKS admin access: ARM-level Cluster User Role (kubeconfig fetch) plus Kubernetes RBAC Writer (cluster-wide kubectl/helm read-write, excluding cluster-scoped security config)"
+  description = "Object IDs of Azure AD groups with AKS admin access"
   type        = list(string)
 }
 
@@ -432,18 +438,6 @@ variable "aks_max_count" {
   default     = null
 }
 
-variable "aks_max_pods" {
-  description = "Maximum pods per node on both AKS node pools. Safe to set well above the Azure CNI default (30) when aks_network_plugin_mode = \"overlay\"."
-  type        = number
-  default     = 50
-}
-
-variable "aks_only_critical_addons_enabled" {
-  description = "Taint the default node pool with CriticalAddonsOnly=true:NoSchedule so only AKS-managed system pods schedule there. Only takes effect when aks_enable_workload_node_pool is also true, otherwise there would be no pool left for customer workloads."
-  type        = bool
-  default     = true
-}
-
 variable "aks_automatic_upgrade_channel" {
   description = "Upgrade channel for Kubernetes (patch, rapid, node-image, stable)"
   type        = string
@@ -462,6 +456,8 @@ variable "aks_azure_policy_enabled" {
 variable "aks_local_account_disabled" {
   description = "Disable local accounts (enforce Azure AD only)"
   type        = bool
+  # Every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "aks_oidc_issuer_enabled" {
@@ -477,6 +473,8 @@ variable "aks_workload_identity_enabled" {
 variable "aks_host_encryption_enabled" {
   description = "Enable host-based encryption for AKS nodes"
   type        = bool
+  # ForceNew if changed; every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "aks_network_plugin" {
@@ -564,12 +562,6 @@ variable "aks_azure_rbac_enabled" {
   type        = bool
 }
 
-variable "aks_encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for AKS node OS disks and etcd/Secrets"
-  type        = bool
-  default     = false
-}
-
 variable "aks_workload_node_pool_vm_size" {
   description = "VM size for AKS workload node pool"
   type        = string
@@ -598,6 +590,8 @@ variable "aks_workload_node_pool_name" {
 variable "aks_workload_node_pool_host_encryption_enabled" {
   description = "Enable host-based encryption for workload node pool nodes"
   type        = bool
+  # Every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "aks_workload_node_pool_label_key" {
@@ -631,43 +625,9 @@ variable "aks_diagnostic_all_logs_category_group" {
 }
 
 variable "aks_external_acr_pull_principal_ids" {
-  description = "List of external principal IDs to grant AcrPull on the DPN ACR"
+  description = "List of external principal IDs (e.g. managed identities from other subscriptions) to grant AcrPull on the DPN ACR"
   type        = list(string)
   default     = []
-}
-
-# ========================================
-# Storage Account Variables
-# ========================================
-
-variable "storage_versioning_enabled" {
-  description = "Enable blob versioning for storage account"
-  type        = bool
-  default     = true
-}
-
-variable "storage_allow_nested_items_to_be_public" {
-  description = "Allow or disallow public access to all blobs or containers"
-  type        = bool
-  default     = false
-}
-
-variable "storage_tags" {
-  description = "Tags for Storage Account resources"
-  type        = map(string)
-  default     = {}
-}
-
-variable "storage_network_rules_default_action" {
-  description = "Default action for storage network rules"
-  type        = string
-  default     = "Deny"
-}
-
-variable "storage_network_rules_bypass" {
-  description = "Bypass rules for storage network ACLs"
-  type        = list(string)
-  default     = ["AzureServices"]
 }
 
 # ========================================
@@ -720,12 +680,6 @@ variable "dev_storage_min_tls_version" {
   default     = "TLS1_2"
 }
 
-variable "dev_storage_infrastructure_encryption_enabled" {
-  description = "Enable infrastructure (double) encryption at rest. No additional Azure cost. ForceNew - can only be set at account creation."
-  type        = bool
-  default     = true
-}
-
 variable "dev_storage_versioning_enabled" {
   description = "Enable blob versioning"
   type        = bool
@@ -755,26 +709,20 @@ variable "dev_storage_create_blob_endpoint" {
   default     = true
 }
 
-variable "dev_storage_create_file_share" {
-  description = "Create an Azure Files share on the dev storage account"
-  type        = bool
-  default     = false
-}
-
 variable "dev_storage_file_share_name" {
-  description = "Name of the Azure Files share"
+  description = "Name of the Azure Files share for developer storage"
   type        = string
   default     = ""
 }
 
 variable "dev_storage_file_share_quota_gb" {
-  description = "Quota, in GB, for the Azure Files share"
+  description = "Quota in GB for the developer Azure Files share"
   type        = number
-  default     = 100
+  default     = 1
 }
 
 variable "dev_storage_create_file_endpoint" {
-  description = "Create file (Azure Files) private endpoint on the dev storage account"
+  description = "Create file private endpoint for developer storage"
   type        = bool
   default     = false
 }
@@ -785,395 +733,10 @@ variable "dev_storage_enable_diagnostic_settings" {
   default     = true
 }
 
-variable "dev_storage_encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for the developer storage account"
-  type        = bool
-  default     = false
-}
-
-variable "dev_storage_blob_contributor_additional_principal_ids" {
-  description = "Additional principal IDs to grant Storage Blob Data Contributor on the dev storage account"
+variable "dev_storage_additional_blob_contributor_principal_ids" {
+  description = "Additional principal IDs to grant Storage Blob Data Contributor role on the dev storage account"
   type        = list(string)
   default     = []
-}
-
-# ========================================
-# Event Grid Variables
-# ========================================
-
-variable "event_grid_topic_name" {
-  description = "Name of the Event Grid custom topic"
-  type        = string
-}
-
-variable "event_grid_resource_group_name" {
-  description = "Resource group name for Event Grid"
-  type        = string
-}
-
-variable "event_grid_local_auth_enabled" {
-  description = "Enable local authentication for Event Grid"
-  type        = bool
-  default     = false
-}
-
-variable "event_grid_public_network_access_enabled" {
-  description = "Enable public network access for Event Grid. Microsoft Defender for Storage cannot deliver malware-scan-result events to a private-endpoint-only topic (confirmed Microsoft/platform limitation) - keep this true if this topic receives Defender for Storage events."
-  type        = bool
-  default     = true
-}
-
-variable "event_grid_enable_diagnostic_settings" {
-  description = "Enable diagnostic settings for Event Grid"
-  type        = bool
-  default     = true
-}
-
-variable "event_grid_data_receiver_principal_ids" {
-  description = "Principal IDs to grant EventGrid Data Receiver role"
-  type        = list(string)
-  default     = []
-}
-
-variable "event_grid_data_sender_principal_ids" {
-  description = "Principal IDs to grant EventGrid Data Sender role"
-  type        = list(string)
-  default     = []
-}
-
-variable "event_grid_contributor_principal_ids" {
-  description = "Principal IDs to grant EventGrid Contributor role"
-  type        = list(string)
-  default     = []
-}
-
-variable "event_grid_subnet_name" {
-  description = "Subnet name for Event Grid private endpoint"
-  type        = string
-}
-
-# ========================================
-# Service Bus Variables
-# ========================================
-
-variable "service_bus_namespace_name" {
-  description = "Name of the Service Bus namespace"
-  type        = string
-}
-
-variable "service_bus_resource_group_name" {
-  description = "Resource group name for Service Bus"
-  type        = string
-}
-
-variable "service_bus_sku" {
-  description = "SKU for Service Bus namespace (Premium required for private endpoints)"
-  type        = string
-  default     = "Premium"
-}
-
-variable "service_bus_capacity" {
-  description = "Messaging units for Premium tier"
-  type        = number
-  default     = 1
-}
-
-variable "service_bus_premium_messaging_partitions" {
-  description = "Number of messaging partitions for Premium tier"
-  type        = number
-  default     = 1
-}
-
-variable "service_bus_public_network_access_enabled" {
-  description = "Enable public network access for Service Bus"
-  type        = bool
-  default     = false
-}
-
-variable "service_bus_local_auth_enabled" {
-  description = "Enable local authentication (SAS tokens) for Service Bus"
-  type        = bool
-  default     = false
-}
-
-variable "service_bus_trusted_services_allowed" {
-  description = "Allow trusted Microsoft services to bypass Service Bus network rules"
-  type        = bool
-  default     = true
-}
-
-variable "service_bus_minimum_tls_version" {
-  description = "Minimum TLS version for Service Bus"
-  type        = string
-  default     = "1.2"
-}
-
-variable "service_bus_enable_diagnostic_settings" {
-  description = "Enable diagnostic settings for Service Bus"
-  type        = bool
-  default     = true
-}
-
-variable "service_bus_encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for Service Bus (Premium SKU only)"
-  type        = bool
-  default     = false
-}
-
-variable "service_bus_data_receiver_principal_ids" {
-  description = "Principal IDs to grant Azure Service Bus Data Receiver role"
-  type        = list(string)
-  default     = []
-}
-
-variable "service_bus_data_sender_principal_ids" {
-  description = "Principal IDs to grant Azure Service Bus Data Sender role"
-  type        = list(string)
-  default     = []
-}
-
-variable "service_bus_data_owner_principal_ids" {
-  description = "Principal IDs to grant Azure Service Bus Data Owner role"
-  type        = list(string)
-  default     = []
-}
-
-variable "service_bus_queues" {
-  description = "Map of Service Bus queues to create"
-  type = map(object({
-    max_size_in_megabytes                = optional(number, 1024)
-    default_message_ttl                  = optional(string, "P14D")
-    lock_duration                        = optional(string, "PT1M")
-    dead_lettering_on_message_expiration = optional(bool, false)
-    max_delivery_count                   = optional(number, 10)
-    requires_duplicate_detection         = optional(bool, false)
-    requires_session                     = optional(bool, false)
-    partitioning_enabled                 = optional(bool, false)
-  }))
-  default = {}
-}
-
-variable "service_bus_subnet_name" {
-  description = "Subnet name for Service Bus private endpoint"
-  type        = string
-}
-
-# ========================================
-# File Scanning Storage Variables
-# ========================================
-
-variable "file_scanning_storage_account_name" {
-  description = "Name of the file scanning service storage account"
-  type        = string
-}
-
-variable "file_scanning_storage_resource_group_name" {
-  description = "Resource group name for file scanning storage"
-  type        = string
-}
-
-variable "file_scanning_storage_account_tier" {
-  description = "Storage account tier"
-  type        = string
-  default     = "Standard"
-}
-
-variable "file_scanning_storage_replication_type" {
-  description = "Storage replication type"
-  type        = string
-  default     = "LRS"
-}
-
-variable "file_scanning_storage_account_kind" {
-  description = "Storage account kind"
-  type        = string
-  default     = "StorageV2"
-}
-
-variable "file_scanning_storage_access_tier" {
-  description = "Storage access tier"
-  type        = string
-  default     = "Hot"
-}
-
-variable "file_scanning_storage_public_network_access_enabled" {
-  description = "Enable public network access for file scanning storage"
-  type        = bool
-  default     = false
-}
-
-variable "file_scanning_storage_min_tls_version" {
-  description = "Minimum TLS version"
-  type        = string
-  default     = "TLS1_2"
-}
-
-variable "file_scanning_storage_infrastructure_encryption_enabled" {
-  description = "Enable infrastructure (double) encryption at rest. No additional Azure cost. ForceNew - can only be set at account creation."
-  type        = bool
-  default     = true
-}
-
-variable "file_scanning_storage_versioning_enabled" {
-  description = "Enable blob versioning"
-  type        = bool
-  default     = true
-}
-
-variable "file_scanning_storage_blob_retention_days" {
-  description = "Blob retention days"
-  type        = number
-  default     = 7
-}
-
-variable "file_scanning_storage_container_retention_days" {
-  description = "Container retention days"
-  type        = number
-  default     = 7
-}
-
-variable "file_scanning_storage_dev_team_spn_object_id" {
-  description = "Object ID of dev team SPN for Storage Blob Data Contributor on file scanning storage"
-  type        = string
-  default     = ""
-}
-
-variable "file_scanning_storage_blob_reader_principal_ids" {
-  description = "Principal IDs to grant Storage Blob Data Reader on file scanning storage"
-  type        = list(string)
-  default     = []
-}
-
-variable "file_scanning_storage_create_blob_endpoint" {
-  description = "Create blob private endpoint for file scanning storage"
-  type        = bool
-  default     = true
-}
-
-variable "file_scanning_storage_enable_diagnostic_settings" {
-  description = "Enable diagnostic settings for file scanning storage"
-  type        = bool
-  default     = true
-}
-
-variable "file_scanning_storage_encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for the file scanning storage account"
-  type        = bool
-  default     = false
-}
-
-variable "file_scanning_storage_subnet_name" {
-  description = "Subnet name for file scanning storage private endpoint"
-  type        = string
-}
-
-# ========================================
-# Observability Logging Storage Variables
-# ========================================
-
-variable "observability_logging_storage_account_name" {
-  description = "Name of the observability logging storage account"
-  type        = string
-}
-
-variable "observability_logging_storage_resource_group_name" {
-  description = "Resource group name for observability logging storage"
-  type        = string
-}
-
-variable "observability_logging_storage_account_tier" {
-  description = "Storage account tier"
-  type        = string
-  default     = "Standard"
-}
-
-variable "observability_logging_storage_replication_type" {
-  description = "Storage replication type"
-  type        = string
-  default     = "LRS"
-}
-
-variable "observability_logging_storage_account_kind" {
-  description = "Storage account kind"
-  type        = string
-  default     = "StorageV2"
-}
-
-variable "observability_logging_storage_access_tier" {
-  description = "Storage access tier"
-  type        = string
-  default     = "Hot"
-}
-
-variable "observability_logging_storage_public_network_access_enabled" {
-  description = "Enable public network access for observability logging storage"
-  type        = bool
-  default     = false
-}
-
-variable "observability_logging_storage_min_tls_version" {
-  description = "Minimum TLS version"
-  type        = string
-  default     = "TLS1_2"
-}
-
-variable "observability_logging_storage_infrastructure_encryption_enabled" {
-  description = "Enable infrastructure (double) encryption at rest. No additional Azure cost. ForceNew - can only be set at account creation."
-  type        = bool
-  default     = true
-}
-
-variable "observability_logging_storage_versioning_enabled" {
-  description = "Enable blob versioning"
-  type        = bool
-  default     = true
-}
-
-variable "observability_logging_storage_blob_retention_days" {
-  description = "Blob retention days"
-  type        = number
-  default     = 7
-}
-
-variable "observability_logging_storage_container_retention_days" {
-  description = "Container retention days"
-  type        = number
-  default     = 7
-}
-
-variable "observability_logging_storage_dev_team_spn_object_id" {
-  description = "Object ID of dev team SPN for Storage Blob Data Contributor on observability logging storage"
-  type        = string
-  default     = ""
-}
-
-variable "observability_logging_storage_blob_reader_principal_ids" {
-  description = "Principal IDs to grant Storage Blob Data Reader on observability logging storage"
-  type        = list(string)
-  default     = []
-}
-
-variable "observability_logging_storage_create_blob_endpoint" {
-  description = "Create blob private endpoint for observability logging storage"
-  type        = bool
-  default     = true
-}
-
-variable "observability_logging_storage_enable_diagnostic_settings" {
-  description = "Enable diagnostic settings for observability logging storage"
-  type        = bool
-  default     = true
-}
-
-variable "observability_logging_storage_encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for the observability logging storage account"
-  type        = bool
-  default     = false
-}
-
-variable "observability_logging_storage_subnet_name" {
-  description = "Subnet name for observability logging storage private endpoint"
-  type        = string
 }
 
 # ========================================
@@ -1198,9 +761,8 @@ variable "workload_identity_service_account_name" {
 }
 
 variable "workload_identity_key_vault_access_enabled" {
-  description = "Whether to grant the workload identity access to Key Vault"
+  description = "Grant the workload identity access to Key Vault (role assignment on the vault)"
   type        = bool
-  default     = true
 }
 
 # ========================================
@@ -1232,10 +794,22 @@ variable "vm_admin_username" {
   type        = string
 }
 
+variable "vm_admin_username_secret_name" {
+  description = "Key Vault secret name that holds the Windows VM administrator username"
+  type        = string
+  default     = ""
+}
+
 variable "vm_admin_password" {
   description = "Administrator password for the Windows VM (should come from Key Vault)"
   type        = string
   sensitive   = true
+}
+
+variable "vm_admin_password_secret_name" {
+  description = "Key Vault secret name that holds the Windows VM administrator password"
+  type        = string
+  default     = ""
 }
 
 variable "vm_subnet_name" {
@@ -1294,20 +868,8 @@ variable "vm_image_version" {
 }
 
 variable "vm_identity_type" {
-  description = "Identity type for the Windows VM (SystemAssigned, UserAssigned)"
+  description = "Type of managed identity for the VM"
   type        = string
-}
-
-variable "vm_admin_username_secret_name" {
-  description = "Key Vault secret name that holds the Windows VM administrator username"
-  type        = string
-  default     = ""
-}
-
-variable "vm_admin_password_secret_name" {
-  description = "Key Vault secret name that holds the Windows VM administrator password"
-  type        = string
-  default     = ""
 }
 
 variable "vm_enable_boot_diagnostics" {
@@ -1330,24 +892,30 @@ variable "vm_patch_assessment_mode" {
   type        = string
 }
 
-variable "vm_encryption_at_host_enabled" {
-  description = "Whether to enable encryption at host"
+variable "vm_enable_automatic_updates" {
+  description = "Whether to enable automatic updates"
   type        = bool
 }
 
-variable "vm_enable_automatic_updates" {
-  description = "Whether to enable automatic updates for the VM"
+variable "vm_encryption_at_host_enabled" {
+  description = "Whether to enable encryption at host"
   type        = bool
+  # ForceNew if changed; every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "vm_secure_boot_enabled" {
   description = "Whether to enable secure boot"
   type        = bool
+  # ForceNew if changed; every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "vm_vtpm_enabled" {
   description = "Whether to enable vTPM"
   type        = bool
+  # ForceNew if changed; every environment tfvars sets this true (verified, zero exceptions) - default lets Checkov resolve it without a var-file.
+  default = true
 }
 
 variable "vm_license_type" {
@@ -1370,15 +938,15 @@ variable "vm_enable_diagnostic_settings" {
   type        = bool
 }
 
-variable "vm_encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for the VM OS disk via a disk encryption set"
+# ========================================
+# Azure Bastion Variables
+# ========================================
+variable "bastion_enabled" {
+  description = "Deploy Azure Bastion as the RDP path into the jump host VM. Set to false if admin access instead goes through an existing AVD (Azure Virtual Desktop) desktop with private network line of sight to this VNet - which one to use is a per-customer decision."
   type        = bool
-  default     = false
+  default     = true
 }
 
-# ========================================
-# Azure Bastion (interim jump host access)
-# ========================================
 variable "bastion_resource_group_name" {
   description = "Resource group name for Azure Bastion"
   type        = string
@@ -1436,3 +1004,394 @@ variable "bastion_enable_diagnostic_settings" {
   default     = true
 }
 
+# ========================================
+# Event Grid Variables
+# ========================================
+
+variable "event_grid_topic_name" {
+  description = "Name of the Event Grid custom topic"
+  type        = string
+}
+
+variable "event_grid_resource_group_name" {
+  description = "Resource group name for Event Grid"
+  type        = string
+}
+
+variable "event_grid_local_auth_enabled" {
+  description = "Enable local authentication for the Event Grid topic"
+  type        = bool
+  default     = false
+}
+
+variable "event_grid_public_network_access_enabled" {
+  description = "Enable public network access for the Event Grid topic"
+  type        = bool
+  default     = false
+}
+
+variable "event_grid_enable_diagnostic_settings" {
+  description = "Enable diagnostic settings for Event Grid"
+  type        = bool
+  default     = true
+}
+
+variable "event_grid_data_receiver_principal_ids" {
+  description = "Principal IDs to grant EventGrid Data Receiver role"
+  type        = list(string)
+  default     = []
+}
+
+variable "event_grid_data_sender_principal_ids" {
+  description = "Principal IDs to grant EventGrid Data Sender role"
+  type        = list(string)
+  default     = []
+}
+
+variable "event_grid_contributor_principal_ids" {
+  description = "Principal IDs to grant EventGrid Contributor role"
+  type        = list(string)
+  default     = []
+}
+
+variable "event_grid_subnet_name" {
+  description = "Name of the subnet to use for the Event Grid private endpoint"
+  type        = string
+  default     = "snet-evgt-dpn-uks-01"
+}
+
+# ========================================
+# Service Bus Variables
+# ========================================
+
+variable "service_bus_namespace_name" {
+  description = "Name of the Service Bus namespace"
+  type        = string
+}
+
+variable "service_bus_resource_group_name" {
+  description = "Resource group name for Service Bus"
+  type        = string
+}
+
+variable "service_bus_sku" {
+  description = "SKU for the Service Bus namespace (Premium required for private endpoints)"
+  type        = string
+  default     = "Premium"
+}
+
+variable "service_bus_public_network_access_enabled" {
+  description = "Enable public network access for the Service Bus namespace"
+  type        = bool
+  default     = false
+}
+
+variable "service_bus_minimum_tls_version" {
+  description = "Minimum TLS version for the Service Bus namespace"
+  type        = string
+  default     = "1.2"
+}
+
+variable "service_bus_enable_diagnostic_settings" {
+  description = "Enable diagnostic settings for Service Bus"
+  type        = bool
+  default     = true
+}
+
+variable "service_bus_queues" {
+  description = "Map of queues to create in the Service Bus namespace"
+  type = map(object({
+    max_size_in_megabytes = optional(number, 1024)
+    default_message_ttl   = optional(string, "P14D")
+    lock_duration         = optional(string, "PT1M")
+  }))
+  default = {}
+}
+
+variable "service_bus_data_receiver_principal_ids" {
+  description = "Principal IDs to grant Azure Service Bus Data Receiver role"
+  type        = list(string)
+  default     = []
+}
+
+variable "service_bus_data_sender_principal_ids" {
+  description = "Principal IDs to grant Azure Service Bus Data Sender role"
+  type        = list(string)
+  default     = []
+}
+
+variable "service_bus_data_owner_principal_ids" {
+  description = "Principal IDs to grant Azure Service Bus Data Owner role"
+  type        = list(string)
+  default     = []
+}
+
+variable "service_bus_capacity" {
+  description = "Messaging units for Premium SKU (1, 2, 4, 8, or 16)"
+  type        = number
+  default     = 1
+}
+
+variable "service_bus_premium_messaging_partitions" {
+  description = "Number of premium messaging partitions (0, 1, or 2)"
+  type        = number
+  default     = 1
+}
+
+variable "service_bus_local_auth_enabled" {
+  description = "Enable local authentication (SAS keys) for the Service Bus namespace"
+  type        = bool
+  default     = false
+}
+
+variable "service_bus_trusted_services_allowed" {
+  description = "Allow trusted Microsoft services to bypass network rules and access the Service Bus namespace"
+  type        = bool
+  default     = false
+}
+
+variable "service_bus_subnet_name" {
+  description = "Name of the subnet to use for the Service Bus private endpoint"
+  type        = string
+  default     = "snet-sb-dpn-uks-01"
+}
+
+# ========================================
+# File Scanning Service Storage Account Variables
+# ========================================
+
+variable "file_scanning_service_storage_account_name" {
+  description = "Name of the file scanning service storage account"
+  type        = string
+}
+
+variable "file_scanning_service_storage_resource_group_name" {
+  description = "Resource group name for file scanning service storage"
+  type        = string
+}
+
+variable "file_scanning_service_storage_account_tier" {
+  description = "Storage account tier"
+  type        = string
+  default     = "Standard"
+}
+
+variable "file_scanning_service_storage_replication_type" {
+  description = "Storage replication type"
+  type        = string
+  default     = "LRS"
+}
+
+variable "file_scanning_service_storage_account_kind" {
+  description = "Storage account kind"
+  type        = string
+  default     = "StorageV2"
+}
+
+variable "file_scanning_service_storage_access_tier" {
+  description = "Storage access tier"
+  type        = string
+  default     = "Hot"
+}
+
+variable "file_scanning_service_storage_public_network_access_enabled" {
+  description = "Enable public network access"
+  type        = bool
+  default     = false
+}
+
+variable "file_scanning_service_storage_min_tls_version" {
+  description = "Minimum TLS version"
+  type        = string
+  default     = "TLS1_2"
+}
+
+variable "file_scanning_service_storage_versioning_enabled" {
+  description = "Enable blob versioning"
+  type        = bool
+  default     = true
+}
+
+variable "file_scanning_service_storage_blob_retention_days" {
+  description = "Blob retention days"
+  type        = number
+  default     = 7
+}
+
+variable "file_scanning_service_storage_container_retention_days" {
+  description = "Container retention days"
+  type        = number
+  default     = 7
+}
+
+variable "file_scanning_service_storage_create_blob_endpoint" {
+  description = "Create blob private endpoint"
+  type        = bool
+  default     = true
+}
+
+variable "file_scanning_service_storage_file_share_name" {
+  description = "Name of the Azure Files share (empty string to skip)"
+  type        = string
+  default     = ""
+}
+
+variable "file_scanning_service_storage_file_share_quota_gb" {
+  description = "Quota in GB for the Azure Files share"
+  type        = number
+  default     = 1
+}
+
+variable "file_scanning_service_storage_create_file_endpoint" {
+  description = "Create file private endpoint"
+  type        = bool
+  default     = false
+}
+
+variable "file_scanning_service_storage_enable_diagnostic_settings" {
+  description = "Enable diagnostic settings"
+  type        = bool
+  default     = true
+}
+
+variable "file_scanning_service_storage_dev_team_spn_object_id" {
+  description = "Object ID of the SPN granted Storage Blob Data Contributor via the storage module"
+  type        = string
+}
+
+variable "file_scanning_service_storage_data_receiver_principal_ids" {
+  description = "Principal IDs to grant Storage Blob Data Reader role on file scanning service storage"
+  type        = list(string)
+  default     = []
+}
+
+variable "file_scanning_service_storage_data_contributor_principal_ids" {
+  description = "Principal IDs to grant Storage Blob Data Contributor role on file scanning service storage"
+  type        = list(string)
+  default     = []
+}
+
+variable "file_scanning_service_storage_subnet_name" {
+  description = "Name of the subnet to use for the File Scanning Service Storage private endpoint"
+  type        = string
+  default     = "snet-stfs-dpn-uks-01"
+}
+
+# ========================================
+# Observability Logging Storage Account
+# ========================================
+variable "observability_logging_storage_account_name" {
+  description = "Name of the observability logging storage account"
+  type        = string
+}
+
+variable "observability_logging_storage_resource_group_name" {
+  description = "Resource group for the observability logging storage account"
+  type        = string
+}
+
+variable "observability_logging_storage_account_tier" {
+  description = "Storage account tier"
+  type        = string
+  default     = "Standard"
+}
+
+variable "observability_logging_storage_replication_type" {
+  description = "Storage account replication type"
+  type        = string
+  default     = "LRS"
+}
+
+variable "observability_logging_storage_account_kind" {
+  description = "Storage account kind"
+  type        = string
+  default     = "StorageV2"
+}
+
+variable "observability_logging_storage_access_tier" {
+  description = "Storage account access tier"
+  type        = string
+  default     = "Hot"
+}
+
+variable "observability_logging_storage_public_network_access_enabled" {
+  description = "Enable public network access"
+  type        = bool
+  default     = false
+}
+
+variable "observability_logging_storage_min_tls_version" {
+  description = "Minimum TLS version"
+  type        = string
+  default     = "TLS1_2"
+}
+
+variable "observability_logging_storage_versioning_enabled" {
+  description = "Enable blob versioning"
+  type        = bool
+  default     = true
+}
+
+variable "observability_logging_storage_blob_retention_days" {
+  description = "Blob soft delete retention days"
+  type        = number
+  default     = 7
+}
+
+variable "observability_logging_storage_container_retention_days" {
+  description = "Container soft delete retention days"
+  type        = number
+  default     = 7
+}
+
+variable "observability_logging_storage_dev_team_spn_object_id" {
+  description = "Object ID of the SPN granted Storage Blob Data Contributor via the storage module"
+  type        = string
+}
+
+variable "observability_logging_storage_create_blob_endpoint" {
+  description = "Create blob private endpoint"
+  type        = bool
+  default     = true
+}
+
+variable "observability_logging_storage_file_share_name" {
+  description = "Name of the Azure Files share (empty string to skip)"
+  type        = string
+  default     = ""
+}
+
+variable "observability_logging_storage_file_share_quota_gb" {
+  description = "Quota in GB for the Azure Files share"
+  type        = number
+  default     = 1
+}
+
+variable "observability_logging_storage_create_file_endpoint" {
+  description = "Create file private endpoint"
+  type        = bool
+  default     = false
+}
+
+variable "observability_logging_storage_enable_diagnostic_settings" {
+  description = "Enable diagnostic settings"
+  type        = bool
+  default     = true
+}
+
+variable "observability_logging_storage_subnet_name" {
+  description = "Name of the subnet to use for the Observability Logging Storage private endpoint"
+  type        = string
+}
+
+variable "observability_logging_storage_data_receiver_principal_ids" {
+  description = "Principal IDs to grant Storage Blob Data Reader role on observability logging storage"
+  type        = list(string)
+  default     = []
+}
+
+variable "observability_logging_storage_data_contributor_principal_ids" {
+  description = "Principal IDs to grant Storage Blob Data Contributor role on observability logging storage"
+  type        = list(string)
+  default     = []
+}

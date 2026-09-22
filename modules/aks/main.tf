@@ -12,15 +12,12 @@
 terraform {
   required_providers {
     azurerm = {
-      source = "hashicorp/azurerm"
+      source                = "hashicorp/azurerm"
+      configuration_aliases = [azurerm.connectivity]
     }
     time = {
       source  = "hashicorp/time"
       version = "~> 0.9"
-    }
-    null = {
-      source  = "hashicorp/null"
-      version = "~> 3.0"
     }
   }
 }
@@ -52,122 +49,25 @@ resource "azurerm_user_assigned_identity" "aks" {
   }
 }
 
-# Grant Private DNS Zone Contributor on the centralized DNS zone.
-# Skipped when private_dns_zone_id is "System" or "None" — AKS manages the
-# zone internally in those cases, requiring no external RBAC grant.
-# The scope falls back to the subscription scope when count=0 so the provider
-# schema validator never sees "System" as a scope value.
-locals {
-  aks_dns_zone_scope = contains(["System", "None"], var.private_dns_zone_id) ? data.azurerm_subscription.current.id : var.private_dns_zone_id
-  aks_subnet_id      = var.bypass_data_sources ? var.subnet_id : data.azurerm_subnet.aks_subnet[0].id
-  aks_law_id         = var.bypass_data_sources ? var.log_analytics_workspace_id : data.azurerm_log_analytics_workspace.log_analytics[0].id
-}
-
-# Standard path: deploy SPN has roleAssignments/write on the private DNS zone subscription.
+# Grant Private DNS Zone Contributor on the centralized DNS zone
 resource "azurerm_role_assignment" "aks_dns_contributor" {
-  count                = (!var.skip_dns_role_assignment && !var.use_vmss_for_dns_role && !contains(["System", "None"], var.private_dns_zone_id)) ? 1 : 0
-  scope                = local.aks_dns_zone_scope
+  provider             = azurerm.connectivity
+  scope                = var.private_dns_zone_id
   role_definition_name = "Private DNS Zone Contributor"
   principal_id         = azurerm_user_assigned_identity.aks.principal_id
 }
 
-# Fallback path: deploy SPN lacks roleAssignments/write on the private DNS zone subscription.
-# Uses VMSS MSI via local-exec (which has the required permission) instead.
-resource "null_resource" "aks_dns_role_vmss_msi" {
-  count = (!var.skip_dns_role_assignment && var.use_vmss_for_dns_role && !contains(["System", "None"], var.private_dns_zone_id)) ? 1 : 0
-
-  triggers = {
-    dns_zone_id  = var.private_dns_zone_id
-    principal_id = azurerm_user_assigned_identity.aks.principal_id
-  }
-
-  provisioner "local-exec" {
-    interpreter = ["bash", "-c"]
-    command     = <<-EOT
-      set +e
-      az login --identity 2>/dev/null
-      EXISTING=$(az role assignment list \
-        --assignee-object-id "${azurerm_user_assigned_identity.aks.principal_id}" \
-        --role "Private DNS Zone Contributor" \
-        --scope "${var.private_dns_zone_id}" \
-        --query "[0].id" -o tsv 2>/dev/null | tr -d '\r\n')
-      if [ -z "$EXISTING" ]; then
-        az role assignment create \
-          --assignee-object-id "${azurerm_user_assigned_identity.aks.principal_id}" \
-          --assignee-principal-type ServicePrincipal \
-          --role "Private DNS Zone Contributor" \
-          --scope "${var.private_dns_zone_id}" 2>&1
-        CREATE_RC=$?
-        if [ "$CREATE_RC" = "0" ]; then
-          echo "AKS DNS Zone Contributor created via VMSS MSI"
-        else
-          echo "INFO: AKS DNS Zone Contributor not granted (rc=$CREATE_RC) - must be pre-granted on the private DNS zone subscription"
-        fi
-      else
-        echo "AKS DNS Zone Contributor already exists: $EXISTING"
-      fi
-    EOT
-  }
-}
-
 # Grant Network Contributor on VNet for DNS zone virtual network link
 resource "azurerm_role_assignment" "aks_identity_vnet_contributor" {
-  scope                = data.azurerm_virtual_network.vnet.id
+  scope                = var.vnet_id
   role_definition_name = "Network Contributor"
   principal_id         = azurerm_user_assigned_identity.aks.principal_id
-
-  lifecycle {
-    # scope resolves from data.azurerm_virtual_network.vnet, which gets deferred to
-    # apply-time whenever module.networking has pending changes elsewhere, producing
-    # a spurious "must be replaced" plan even though the actual VNet ID never changes.
-    ignore_changes = [scope]
-  }
 }
 
 # Grant Network Contributor on AKS subnet for the User Assigned Identity
 resource "azurerm_role_assignment" "aks_identity_network_contributor" {
-  scope                = local.aks_subnet_id
+  scope                = var.subnet_id
   role_definition_name = "Network Contributor"
-  principal_id         = azurerm_user_assigned_identity.aks.principal_id
-
-  lifecycle {
-    # See aks_identity_vnet_contributor above — same deferred-read issue via local.aks_subnet_id.
-    ignore_changes = [scope]
-  }
-}
-
-# ------------------------------------------------------------------------------
-# Customer-managed key support: node OS disks (via Disk Encryption Set) and
-# etcd / Kubernetes Secrets (via the Key Management Service block below).
-# ------------------------------------------------------------------------------
-resource "azurerm_disk_encryption_set" "aks" {
-  count               = var.encryption_enabled ? 1 : 0
-  name                = "${var.aks_name}-des"
-  resource_group_name = azurerm_resource_group.aks.name
-  location            = var.location
-  key_vault_key_id    = var.key_vault_key_id
-  tags                = var.tags
-
-  identity {
-    type = "SystemAssigned"
-  }
-}
-
-# Grants the disk encryption set's identity permission to wrap/unwrap the CMK
-# used for node OS disks.
-resource "azurerm_role_assignment" "aks_des_cmk" {
-  count                = var.encryption_enabled ? 1 : 0
-  scope                = var.key_vault_id
-  role_definition_name = "Key Vault Crypto Service Encryption User"
-  principal_id         = azurerm_disk_encryption_set.aks[0].identity[0].principal_id
-}
-
-# Grants the AKS cluster identity permission to wrap/unwrap the CMK used for
-# etcd / Kubernetes Secrets encryption (key_management_service block below).
-resource "azurerm_role_assignment" "aks_cluster_identity_cmk" {
-  count                = var.encryption_enabled ? 1 : 0
-  scope                = var.key_vault_id
-  role_definition_name = "Key Vault Crypto Service Encryption User"
   principal_id         = azurerm_user_assigned_identity.aks.principal_id
 }
 
@@ -175,14 +75,11 @@ resource "azurerm_role_assignment" "aks_cluster_identity_cmk" {
 resource "time_sleep" "wait_for_rbac_propagation" {
   depends_on = [
     azurerm_role_assignment.aks_dns_contributor,
-    null_resource.aks_dns_role_vmss_msi,
     azurerm_role_assignment.aks_identity_vnet_contributor,
-    azurerm_role_assignment.aks_identity_network_contributor,
-    azurerm_role_assignment.aks_des_cmk,
-    azurerm_role_assignment.aks_cluster_identity_cmk
+    azurerm_role_assignment.aks_identity_network_contributor
   ]
 
-  create_duration = "300s"
+  create_duration = "60s"
 }
 
 # ------------------------------------------------------------------------------
@@ -194,34 +91,21 @@ resource "azurerm_kubernetes_cluster" "aks" {
   resource_group_name = azurerm_resource_group.aks.name
   node_resource_group = var.node_resource_group
   kubernetes_version  = var.kubernetes_version
-  # dns_prefix_private_cluster is only valid with a custom DNS zone (not "System"/"None")
-  dns_prefix_private_cluster = (var.private_cluster_enabled && !contains(["System", "None"], var.private_dns_zone_id)) ? var.aks_name : null
-  # dns_prefix is used when private_dns_zone_id is System or None
-  dns_prefix              = contains(["System", "None"], var.private_dns_zone_id) ? var.aks_name : null
+  # Use dns_prefix_private_cluster for private cluster with custom DNS zone
+  dns_prefix_private_cluster = var.private_cluster_enabled ? var.aks_name : null
+  # dns_prefix not used for private clusters
+  dns_prefix              = null
   private_cluster_enabled = var.private_cluster_enabled
   # Use the provided private DNS zone ID directly to avoid replacement issues
   private_dns_zone_id       = var.private_dns_zone_id
   sku_tier                  = var.sku_tier
   automatic_upgrade_channel = var.automatic_upgrade_channel
   node_os_upgrade_channel   = var.node_os_upgrade_channel
-  # Customer-managed key for node OS disks (ForceNew — set at cluster creation only)
-  disk_encryption_set_id = var.encryption_enabled ? azurerm_disk_encryption_set.aks[0].id : null
 
-  # Customer-managed key for etcd / Kubernetes Secrets encryption
-  dynamic "key_management_service" {
-    for_each = var.encryption_enabled ? [1] : []
-    content {
-      key_vault_key_id         = var.key_vault_key_id
-      key_vault_network_access = var.key_vault_network_access
-    }
-  }
-
-  dynamic "service_mesh_profile" {
-    for_each = var.service_mesh_mode == "Disabled" ? [] : [1]
-    content {
-      mode      = var.service_mesh_mode
-      revisions = var.service_mesh_revisions
-    }
+  # Enable Istio service mesh
+  service_mesh_profile {
+    mode      = var.service_mesh_mode
+    revisions = var.service_mesh_revisions
   }
 
   # Use user-assigned managed identity (required for custom private DNS zone)
@@ -239,20 +123,16 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   # Default node pool configuration
   default_node_pool {
-    name                    = var.default_node_pool_name
-    vm_size                 = var.vm_size
-    vnet_subnet_id          = local.aks_subnet_id
-    host_encryption_enabled = var.host_encryption_enabled
-    node_count              = var.enable_auto_scaling ? null : var.node_count
-    auto_scaling_enabled    = var.enable_auto_scaling
-    min_count               = var.enable_auto_scaling ? var.min_count : null
-    max_count               = var.enable_auto_scaling ? var.max_count : null
-    zones                   = var.node_pool_zones
-    max_pods                = var.max_pods
-    # Only taints the system pool when a workload node pool exists to receive
-    # customer workloads instead - otherwise every pod would be stuck Pending.
-    only_critical_addons_enabled = var.enable_workload_node_pool ? var.only_critical_addons_enabled : false
-    temporary_name_for_rotation  = "systmp2"
+    name                        = var.default_node_pool_name
+    vm_size                     = var.vm_size
+    vnet_subnet_id              = var.subnet_id
+    host_encryption_enabled     = var.host_encryption_enabled
+    node_count                  = var.enable_auto_scaling ? null : var.node_count
+    auto_scaling_enabled        = var.enable_auto_scaling
+    min_count                   = var.enable_auto_scaling ? var.min_count : null
+    max_count                   = var.enable_auto_scaling ? var.max_count : null
+    zones                       = var.node_pool_zones
+    temporary_name_for_rotation = "systemp"
 
     upgrade_settings {
       max_surge                     = var.max_surge
@@ -279,7 +159,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   # Monitoring integration
   oms_agent {
-    log_analytics_workspace_id = local.aks_law_id
+    log_analytics_workspace_id = var.log_analytics_workspace_id
   }
 
   # Key Vault secrets provider
@@ -296,7 +176,7 @@ resource "azurerm_kubernetes_cluster" "aks" {
 
   lifecycle {
     # Prevent accidental cluster destruction
-    # This will cause OpenTofu to error instead of destroying the cluster
+    # This will cause Terraform to error instead of destroying the cluster
     # To destroy, this must be manually removed or overridden
     prevent_destroy = true
 
@@ -304,9 +184,9 @@ resource "azurerm_kubernetes_cluster" "aks" {
     ignore_changes = [
       # Node count is managed by autoscaling
       default_node_pool[0].node_count,
-      # Kubernetes version upgrades should be done via upgrade channels, not OpenTofu
+      # Kubernetes version upgrades should be done via upgrade channels, not Terraform
       kubernetes_version,
-      # Tags may be modified outside OpenTofu
+      # Tags may be modified outside Terraform
       tags
     ]
   }
@@ -319,7 +199,7 @@ resource "azurerm_monitor_diagnostic_setting" "aks_diagnostic" {
   count                      = var.enable_diagnostic_settings ? 1 : 0
   name                       = "${var.aks_name}-diagnostic"
   target_resource_id         = azurerm_kubernetes_cluster.aks.id
-  log_analytics_workspace_id = local.aks_law_id
+  log_analytics_workspace_id = var.log_analytics_workspace_id
 
   enabled_metric {
     category = var.diagnostic_all_metrics_category
@@ -339,10 +219,9 @@ resource "azurerm_kubernetes_cluster_node_pool" "workload" {
   kubernetes_cluster_id       = azurerm_kubernetes_cluster.aks.id
   vm_size                     = var.workload_node_pool_vm_size
   node_count                  = var.workload_node_pool_count
-  vnet_subnet_id              = local.aks_subnet_id
+  vnet_subnet_id              = var.subnet_id
   zones                       = var.workload_node_pool_zones
   host_encryption_enabled     = var.workload_node_pool_host_encryption_enabled
-  max_pods                    = var.max_pods
   temporary_name_for_rotation = "worktemp"
 
   node_labels = {
@@ -358,6 +237,10 @@ resource "azurerm_kubernetes_cluster_node_pool" "workload" {
   }
 
   tags = var.tags
+
+  lifecycle {
+    prevent_destroy = true
+  }
 }
 
 # ------------------------------------------------------------------------------
@@ -383,68 +266,29 @@ resource "azurerm_role_assignment" "aks_keyvault_secrets_user" {
 }
 
 # Azure Kubernetes Service Cluster User Role for admin group
-# Grants ARM-level "az aks get-credentials" only — no Kubernetes data-plane access.
-# The Kubernetes-RBAC role below is required for kubectl/helm to actually work,
-# since this cluster has Azure RBAC for Kubernetes Authorization enabled.
 resource "azurerm_role_assignment" "aks_cluster_user" {
-  for_each             = toset(var.aks_admin_group)
   scope                = azurerm_kubernetes_cluster.aks.id
   role_definition_name = "Azure Kubernetes Service Cluster User Role"
-  principal_id         = each.value
+  principal_id         = var.aks_admin_group[0]
 
   depends_on = [azurerm_kubernetes_cluster.aks]
-}
-
-# Azure Kubernetes Service RBAC Writer for admin group
-# Kubernetes data-plane access (cluster-wide, all namespaces): read/write on most
-# objects (pods, deployments, services, configmaps, etc.) but not cluster-scoped
-# security config (ClusterRoles/ClusterRoleBindings, CRDs, node config).
-resource "azurerm_role_assignment" "aks_rbac_writer" {
-  for_each             = toset(var.aks_admin_group)
-  scope                = azurerm_kubernetes_cluster.aks.id
-  role_definition_name = "Azure Kubernetes Service RBAC Writer"
-  principal_id         = each.value
-
-  depends_on = [azurerm_kubernetes_cluster.aks]
-}
-
-# Azure Kubernetes Service RBAC Cluster Admin for admin group
-# Full Kubernetes data-plane access, including cluster-scoped security config
-# (ClusterRoles/ClusterRoleBindings, CRDs, node config) that RBAC Writer above lacks.
-resource "azurerm_role_assignment" "aks_rbac_cluster_admin" {
-  for_each             = toset(var.aks_admin_group)
-  scope                = azurerm_kubernetes_cluster.aks.id
-  role_definition_name = "Azure Kubernetes Service RBAC Cluster Admin"
-  principal_id         = each.value
-
-  depends_on = [azurerm_kubernetes_cluster.aks]
-}
-
-# Managed Identity Contributor on the AKS user-assigned identity for admin group
-resource "azurerm_role_assignment" "aks_identity_managed_identity_contributor" {
-  for_each             = toset(var.aks_admin_group)
-  scope                = azurerm_user_assigned_identity.aks.id
-  role_definition_name = "Managed Identity Contributor"
-  principal_id         = each.value
 }
 
 # ACR Pull role for admin group
 resource "azurerm_role_assignment" "admin_group_acr_pull" {
-  for_each             = toset(var.aks_admin_group)
   scope                = var.container_registry_id
   role_definition_name = "AcrPull"
-  principal_id         = each.value
+  principal_id         = var.aks_admin_group[0]
 }
 
 # ACR Push role for admin group
 resource "azurerm_role_assignment" "admin_group_acr_push" {
-  for_each             = toset(var.aks_admin_group)
   scope                = var.container_registry_id
   role_definition_name = "AcrPush"
-  principal_id         = each.value
+  principal_id         = var.aks_admin_group[0]
 }
 
-# AcrPull for external identities (e.g. a managed identity outside this AKS cluster pulling from this ACR)
+# AcrPull for external identities (e.g. another cluster's managed identity pulling from this ACR)
 resource "azurerm_role_assignment" "external_acr_pull" {
   for_each             = toset(var.external_acr_pull_principal_ids)
   scope                = var.container_registry_id

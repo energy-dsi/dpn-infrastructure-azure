@@ -1,10 +1,8 @@
-﻿# Windows Virtual Machine Module
+# Windows Virtual Machine Module
 
 ## Purpose in this architecture
 
-This is the jump host referenced in `modules/bastion`'s README - the one VM in this deployment a human actually logs into, reached only through Azure Bastion (never a public IP). From here, a platform engineer has network line-of-sight to run `kubectl`/`az`/etc. against every other private-endpoint-only resource in the deployment. It is not meant to run application workloads - that's what `aks` is for.
-
-`allow_extension_operations` defaults to `false` since nothing in this module installs a VM extension by default; flip it to `true` only if you need one (e.g. `AADLoginForWindows` for Azure AD-based RDP login, or the Azure Monitor Agent extension) - leaving it `false` reduces attack surface when you don't.
+The Windows jump host that Azure Bastion (`modules/bastion`) RDPs into when `bastion_enabled = true`, or that you reach some other way (e.g. an existing AVD desktop) otherwise - see the root README's admin-access section. This module is always deployed regardless of `bastion_enabled`, since it's also useful standalone for Windows-based management or legacy workloads.
 
 This OpenTofu module creates a Windows Virtual Machine in Azure with security best practices.
 
@@ -26,8 +24,8 @@ This OpenTofu module creates a Windows Virtual Machine in Azure with security be
 module "windows_vm" {
   source = "./modules/vm"
 
-  vm_name             = "vm-app-dev-uks-01"
-  resource_group_name = "rg-vm-dev-uks-01"
+  vm_name             = "vm-dpn-azure-uks-01"
+  resource_group_name = "rg-vm-dpn-azure-uks-01"
   location            = "UK South"
   vm_size             = "Standard_D2s_v5"
   
@@ -51,14 +49,6 @@ module "windows_vm" {
   }
 }
 ```
-
-## Customer-Managed Key (CMK) Encryption
-
-Set `encryption_enabled = true` plus `key_vault_key_id` (and the existing
-`key_vault_id`) to encrypt the OS disk with your own Key Vault key via a
-disk encryption set, instead of a Microsoft-managed key. The module creates
-the disk encryption set and grants its identity `Key Vault Crypto Service
-Encryption User` on `key_vault_id`.
 
 ## Security Recommendations
 
@@ -85,12 +75,10 @@ Encryption User` on `key_vault_id`.
 | vm_size | VM size (e.g., Standard_D2s_v5) | string | - | yes |
 | admin_username | Administrator username | string | - | yes |
 | admin_password | Administrator password | string | - | yes |
-| allow_extension_operations | Allow VM extensions to be installed | bool | false | no |
 | subnet_id | ID of the subnet | string | - | yes |
 | encryption_at_host_enabled | Enable encryption at host | bool | true | no |
 | secure_boot_enabled | Enable secure boot | bool | true | no |
 | vtpm_enabled | Enable vTPM | bool | true | no |
-| reader_principal_ids | Object IDs granted Reader on the VM and its NIC (required by Azure Bastion to select this VM in the connect flow) | list(string) | [] | no |
 
 ## Outputs
 

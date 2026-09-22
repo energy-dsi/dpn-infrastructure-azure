@@ -1,5 +1,5 @@
 terraform {
-  required_version = ">= 1.9.0"
+  required_version = ">= 1.6.0, < 2.0.0"
 
   required_providers {
     azurerm = {
@@ -10,20 +10,20 @@ terraform {
       source  = "hashicorp/time"
       version = "~> 0.9"
     }
-    null = {
-      source  = "hashicorp/null"
-      version = "~> 3.0"
-    }
   }
 }
 
 # Default provider for main subscription
 provider "azurerm" {
-  features {
-    resource_group {
-      prevent_deletion_if_contains_resources = false
-    }
-  }
+  features {}
   subscription_id                 = var.subscription_id
+  resource_provider_registrations = "none"
+}
+
+# Connectivity provider for accessing private DNS zones
+provider "azurerm" {
+  alias = "connectivity"
+  features {}
+  subscription_id                 = var.connectivity_subscription_id
   resource_provider_registrations = "none"
 }

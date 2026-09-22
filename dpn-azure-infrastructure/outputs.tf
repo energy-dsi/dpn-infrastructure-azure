@@ -69,11 +69,6 @@ output "aks_oidc_issuer_url" {
 }
 
 # ========================================
-# Event Grid Outputs
-# No root-level outputs currently defined for this module.
-# ========================================
-
-# ========================================
 # Developer Storage Account Outputs
 # ========================================
 output "dev_storage_account_id" {
@@ -84,6 +79,11 @@ output "dev_storage_account_id" {
 output "dev_storage_account_name" {
   description = "Developer storage account name"
   value       = module.dev_storage.storage_account_name
+}
+
+output "dev_storage_file_share_name" {
+  description = "Developer Azure Files share name"
+  value       = module.dev_storage.file_share_name
 }
 
 # Note: Developer storage module doesn't export private_endpoint_ip_address output

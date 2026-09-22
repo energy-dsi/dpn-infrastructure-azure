@@ -61,6 +61,14 @@ variable "subnets" {
       source_address_prefix      = string
       destination_address_prefix = string
     })), {})
+    route_table = optional(object({
+      name = string
+      routes = map(object({
+        address_prefix         = string
+        next_hop_type          = string
+        next_hop_in_ip_address = optional(string)
+      }))
+    }))
   }))
 }
 
@@ -76,10 +84,5 @@ variable "log_analytics_workspace_name" {
 
 variable "log_analytics_resource_group_name" {
   description = "Resource group name for Log Analytics workspace"
-  type        = string
-}
-
-variable "log_analytics_workspace_id" {
-  description = "Resource ID of the Log Analytics workspace for diagnostics"
   type        = string
 }

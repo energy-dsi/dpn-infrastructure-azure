@@ -11,15 +11,14 @@
 terraform {
   required_providers {
     azurerm = {
-      source = "hashicorp/azurerm"
+      source                = "hashicorp/azurerm"
+      configuration_aliases = [azurerm.connectivity]
     }
   }
 }
 
 locals {
   sandbox_subscription = can(regex("sbx", data.azurerm_subscription.current.display_name))
-  kv_subnet_id         = var.bypass_data_sources ? var.subnet_id : data.azurerm_subnet.keyvault[0].id
-  kv_law_id            = var.bypass_data_sources ? var.log_analytics_workspace_id : data.azurerm_log_analytics_workspace.log_analytics[0].id
 }
 
 # ------------------------------------------------------------------------------
@@ -65,8 +64,6 @@ resource "azurerm_key_vault" "keyvault" {
 
   lifecycle {
     prevent_destroy = true
-    # Prevents spurious in-place updates when data.azurerm_client_config.current is deferred by networking changes
-    ignore_changes = [tenant_id]
   }
 }
 
@@ -77,7 +74,7 @@ resource "azurerm_private_endpoint" "keyvault" {
   name                = "${var.keyvault_name}-pe"
   location            = var.location
   resource_group_name = azurerm_resource_group.keyvault.name
-  subnet_id           = local.kv_subnet_id
+  subnet_id           = var.subnet_id
   tags                = var.tags
 
   private_service_connection {
@@ -87,18 +84,13 @@ resource "azurerm_private_endpoint" "keyvault" {
     subresource_names              = ["vault"]
   }
 
-  dynamic "private_dns_zone_group" {
-    for_each = var.keyvault_private_dns_zone_id != null ? [1] : []
-    content {
-      name                 = "default"
-      private_dns_zone_ids = [var.keyvault_private_dns_zone_id]
-    }
-  }
+  # Do not define DNS zone group - Azure Policy will add it automatically
+  # Terraform will ignore changes to it
 
   lifecycle {
     ignore_changes = [
-      tags,
-      subnet_id
+      private_dns_zone_group,
+      tags
     ]
   }
 
@@ -110,7 +102,7 @@ resource "azurerm_monitor_diagnostic_setting" "keyvault_diagnostic" {
   count                      = var.enable_diagnostic_settings ? 1 : 0
   name                       = "${var.keyvault_name}-diag"
   target_resource_id         = azurerm_key_vault.keyvault.id
-  log_analytics_workspace_id = local.kv_law_id
+  log_analytics_workspace_id = var.log_analytics_workspace_id
 
   enabled_log {
     category = "AuditEvent"
@@ -147,28 +139,13 @@ resource "azurerm_role_assignment" "keyvault_secrets_user" {
   principal_id         = each.value
 }
 
-resource "azurerm_role_assignment" "keyvault_crypto_officer" {
-  for_each             = toset(var.key_vault_crypto_officer_object_ids)
-  scope                = azurerm_key_vault.keyvault.id
-  role_definition_name = "Key Vault Crypto Officer"
-  principal_id         = each.value
-}
-
-resource "azurerm_role_assignment" "keyvault_crypto_user" {
-  for_each             = toset(var.key_vault_crypto_user_object_ids)
-  scope                = azurerm_key_vault.keyvault.id
-  role_definition_name = "Key Vault Crypto User"
-  principal_id         = each.value
-}
-
 # Optional: Create example secrets
 resource "azurerm_key_vault_secret" "secrets" {
-  for_each        = var.initial_secrets
-  name            = each.key
-  value           = each.value.value
-  expiration_date = each.value.expiration_date
-  key_vault_id    = azurerm_key_vault.keyvault.id
-  content_type    = "text/plain"
+  for_each     = var.initial_secrets
+  name         = each.key
+  value        = each.value
+  key_vault_id = azurerm_key_vault.keyvault.id
+  content_type = "text/plain"
 
   depends_on = [
     azurerm_role_assignment.keyvault_admin,
@@ -178,13 +155,12 @@ resource "azurerm_key_vault_secret" "secrets" {
 
 # Optional: Create example keys with rotation policy
 resource "azurerm_key_vault_key" "keys" {
-  for_each        = var.initial_keys
-  name            = each.key
-  key_vault_id    = azurerm_key_vault.keyvault.id
-  key_type        = each.value.key_type
-  key_size        = each.value.key_size
-  key_opts        = each.value.key_opts
-  expiration_date = each.value.expiration_date
+  for_each     = var.initial_keys
+  name         = each.key
+  key_vault_id = azurerm_key_vault.keyvault.id
+  key_type     = each.value.key_type
+  key_size     = each.value.key_size
+  key_opts     = each.value.key_opts
 
   dynamic "rotation_policy" {
     for_each = each.value.enable_rotation ? [1] : []
@@ -195,6 +171,48 @@ resource "azurerm_key_vault_key" "keys" {
 
       expire_after         = each.value.rotation_expire_after
       notify_before_expiry = each.value.rotation_notify_before_expiry
+    }
+  }
+
+  depends_on = [
+    azurerm_role_assignment.keyvault_admin
+  ]
+}
+
+# Optional: self-signed certificates (e.g. a Notation image-signing certificate).
+# Notation's standard signing model needs a leaf certificate, not a bare key - this is
+# separate from initial_keys above for that reason. Self-signed matches this codebase's
+# existing convention for internal trust.
+resource "azurerm_key_vault_certificate" "certificates" {
+  for_each     = var.initial_certificates
+  name         = each.key
+  key_vault_id = azurerm_key_vault.keyvault.id
+
+  certificate_policy {
+    issuer_parameters {
+      name = "Self"
+    }
+    key_properties {
+      exportable = each.value.exportable
+      key_type   = each.value.key_type
+      key_size   = each.value.key_size
+      reuse_key  = false
+    }
+    lifetime_action {
+      action {
+        action_type = "AutoRenew"
+      }
+      trigger {
+        days_before_expiry = each.value.renew_days_before_expiry
+      }
+    }
+    secret_properties {
+      content_type = "application/x-pkcs12"
+    }
+    x509_certificate_properties {
+      key_usage          = each.value.key_usage
+      subject            = each.value.subject
+      validity_in_months = each.value.validity_in_months
     }
   }
 

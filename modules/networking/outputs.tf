@@ -1,11 +1,11 @@
 output "subnet_ids" {
   description = "Map of subnet names to their IDs"
-  value       = { for k in keys(var.subnets) : k => "${data.azurerm_virtual_network.vnet.id}/subnets/${k}" }
+  value       = { for k, v in data.azurerm_subnet.subnets : k => v.id }
 }
 
 output "subnet_address_prefixes" {
   description = "Map of subnet names to their address prefixes"
-  value       = { for k, v in var.subnets : k => [v.address_prefix] }
+  value       = { for k, v in data.azurerm_subnet.subnets : k => v.address_prefixes }
 }
 
 output "nsg_ids" {

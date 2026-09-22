@@ -182,7 +182,7 @@ If the upgrade fails or causes issues:
 ## Testing Recommendations
 
 **Before production:**
-1. Test in DPN-001 (development) first
+1. Test in DPN-002 (development) first
 2. Deploy a sample application
 3. Verify the upgrade process works correctly
 4. Only then proceed with DPN-001

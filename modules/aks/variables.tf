@@ -47,30 +47,8 @@ variable "container_registry_id" {
 }
 
 variable "key_vault_id" {
-  description = "Resource ID of the Key Vault for secrets management and, when encryption_enabled is true, the vault holding key_vault_key_id — the module grants the disk encryption set's identity and the AKS cluster identity Key Vault Crypto Service Encryption User on this vault."
+  description = "Resource ID of the Key Vault for secrets management"
   type        = string
-}
-
-variable "encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for node OS disks (via a disk encryption set) and etcd / Kubernetes Secrets (via the key_management_service block). ForceNew: only takes effect at cluster creation."
-  type        = bool
-  default     = false
-}
-
-variable "key_vault_key_id" {
-  description = "Key Vault key ID for customer-managed encryption of node OS disks and etcd/Secrets. Required when encryption_enabled is true."
-  type        = string
-  default     = null
-}
-
-variable "key_vault_network_access" {
-  description = "Network access mode the AKS control plane uses to reach key_vault_key_id for etcd/Secrets encryption: \"Private\" (via Private Link, matches this module's private-endpoint-only Key Vault) or \"Public\"."
-  type        = string
-  default     = "Private"
-  validation {
-    condition     = contains(["Private", "Public"], var.key_vault_network_access)
-    error_message = "key_vault_network_access must be Private or Public."
-  }
 }
 
 variable "tags" {
@@ -96,23 +74,12 @@ variable "node_resource_group" {
 variable "private_cluster_enabled" {
   description = "Enable private cluster (API server accessible only via private endpoint)"
   type        = bool
+  default     = true
 }
 
 variable "private_dns_zone_id" {
-  description = "Resource ID of the private DNS zone, or 'System' to let AKS manage its own zone, or 'None' for BYO DNS. Required when private_cluster_enabled is true"
+  description = "Resource ID of the private DNS zone. Required when private_cluster_enabled is true"
   type        = string
-}
-
-variable "use_vmss_for_dns_role" {
-  description = "When true, use VMSS MSI local-exec to create the AKS DNS Zone Contributor role assignment instead of the azurerm provider. Set to true when the deploy SPN lacks roleAssignments/write on the private DNS zone subscription, and your runner itself has an Azure-managed identity with that right (e.g. a VMSS-backed self-hosted runner)."
-  type        = bool
-  default     = false
-}
-
-variable "skip_dns_role_assignment" {
-  description = "When true, skip creating Private DNS Zone Contributor for the AKS managed identity entirely. Use when the Platform LZ pre-grants this role assignment automatically (e.g. via Azure Policy)."
-  type        = bool
-  default     = false
 }
 
 variable "kubernetes_version" {
@@ -163,20 +130,8 @@ variable "max_count" {
   default     = null
 }
 
-variable "max_pods" {
-  description = "Maximum pods per node on the default node pool. Safe to set well above the Azure CNI default (30) when network_plugin_mode = \"overlay\" (pod IPs come from a separate overlay CIDR, not the VNet subnet)."
-  type        = number
-  default     = 50
-}
-
-variable "only_critical_addons_enabled" {
-  description = "Taint the default node pool with CriticalAddonsOnly=true:NoSchedule so only AKS-managed system pods schedule there, keeping customer workloads on the workload node pool"
-  type        = bool
-  default     = true
-}
-
 variable "aks_admin_group" {
-  description = "Object IDs of Azure AD groups/principals granted AKS admin access: ARM-level Cluster User Role (kubeconfig fetch) plus Kubernetes RBAC Writer (cluster-wide kubectl/helm read-write, excluding cluster-scoped security config)"
+  description = "Object IDs of Azure AD groups with AKS admin access"
   type        = list(string)
 }
 
@@ -282,26 +237,31 @@ variable "workload_node_pool_zones" {
 variable "azure_policy_enabled" {
   description = "Enable Azure Policy for AKS cluster"
   type        = bool
+  default     = true
 }
 
 variable "local_account_disabled" {
   description = "Disable local accounts (enforce Azure AD only)"
   type        = bool
+  default     = true
 }
 
 variable "oidc_issuer_enabled" {
   description = "Enable OIDC issuer for workload identity"
   type        = bool
+  default     = true
 }
 
 variable "workload_identity_enabled" {
   description = "Enable workload identity"
   type        = bool
+  default     = true
 }
 
 variable "host_encryption_enabled" {
   description = "Enable host-based encryption for AKS nodes"
   type        = bool
+  default     = true
 }
 
 variable "network_plugin" {
@@ -322,9 +282,10 @@ variable "load_balancer_sku" {
 variable "azure_rbac_enabled" {
   description = "Enable Azure RBAC for Kubernetes authorization"
   type        = bool
+  default     = true
 }
 
-variable "private_dns_zone_subscription_id" {
+variable "connectivity_subscription_id" {
   description = "Subscription ID where central Private DNS zones are located"
   type        = string
 }
@@ -351,6 +312,7 @@ variable "workload_node_pool_name" {
 variable "workload_node_pool_host_encryption_enabled" {
   description = "Enable host-based encryption for workload node pool nodes"
   type        = bool
+  default     = true
 }
 
 variable "workload_node_pool_label_key" {
@@ -384,25 +346,22 @@ variable "diagnostic_all_logs_category_group" {
 }
 
 variable "external_acr_pull_principal_ids" {
-  description = "List of external principal IDs to grant AcrPull on this ACR"
+  description = "List of external principal IDs (e.g. managed identities from other subscriptions) to grant AcrPull on this ACR"
   type        = list(string)
   default     = []
 }
 
 variable "subnet_id" {
-  description = "AKS subnet ID passed directly from the root. When set, the azurerm_subnet data source is skipped (required on first deploy when the subnet does not yet exist in Azure)."
+  description = "Subnet ID for AKS node pools and network contributor role assignment"
   type        = string
-  default     = null
+}
+
+variable "vnet_id" {
+  description = "VNet ID for AKS network contributor role assignment"
+  type        = string
 }
 
 variable "log_analytics_workspace_id" {
-  description = "Log Analytics workspace ID passed directly from the root. When set, the data source lookup is skipped (required on first deploy when the LAW does not yet exist)."
+  description = "Log Analytics workspace ID for OMS agent and diagnostic settings"
   type        = string
-  default     = null
-}
-
-variable "bypass_data_sources" {
-  description = "When true, skip subnet and log analytics data source reads and use subnet_id / log_analytics_workspace_id directly. Must be set to true on first deploy when these resources are created in the same apply."
-  type        = bool
-  default     = false
 }

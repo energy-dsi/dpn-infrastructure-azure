@@ -42,76 +42,57 @@ resource "null_resource" "subnet_with_nsg" {
     subnet_name    = each.key
     address_prefix = each.value.address_prefix
     nsg_id         = each.value.create_nsg ? azurerm_network_security_group.nsg[each.key].id : ""
-    delegation     = each.value.delegation != null ? each.value.delegation.service_delegation_name : ""
     vnet_name      = var.vnet_name
     resource_group = var.vnet_resource_group_name
   }
 
   provisioner "local-exec" {
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-EOT
-      # Add jitter to reduce concurrent writes to the same VNet (AnotherOperationInProgress)
-      sleep $((RANDOM % 30 + 5))
+    command = <<-EOT
+      # Wait a few seconds to avoid concurrent operations on VNet
+      sleep $((RANDOM % 5 + 2))
 
       # Check if subnet exists, only create if it doesn't
       if ! az network vnet subnet show \
         --resource-group ${var.vnet_resource_group_name} \
         --vnet-name ${var.vnet_name} \
-        --name ${each.key} >/dev/null 2>&1; then
+        --name ${each.key} &>/dev/null; then
 
         echo "Creating subnet ${each.key}..."
 
-        # Retry logic for concurrent VNet operation errors (using while loop for sh compatibility)
+        # Retry logic for concurrent operation errors (using while loop for sh compatibility)
         i=1
-        while [ $i -le 8 ]; do
+        while [ $i -le 5 ]; do
           if az network vnet subnet create \
             --name ${each.key} \
             --resource-group ${var.vnet_resource_group_name} \
             --vnet-name ${var.vnet_name} \
             --address-prefix ${each.value.address_prefix} \
             ${each.value.create_nsg ? "--network-security-group ${azurerm_network_security_group.nsg[each.key].id}" : ""} \
-            ${each.value.delegation != null ? "--delegations ${each.value.delegation.service_delegation_name}" : ""} \
             --private-endpoint-network-policies ${each.value.private_endpoint_network_policies} \
+            ${each.value.delegation != null ? "--delegations ${each.value.delegation.service_delegation_name}" : ""} \
             ${each.value.default_outbound_access_enabled ? "--default-outbound true" : "--default-outbound false"} 2>&1; then
             echo "✓ Subnet ${each.key} created successfully"
             break
           else
-            if [ $i -lt 8 ]; then
-              echo "Retry $i/8: Waiting before retry due to concurrent operation..."
-              sleep $((RANDOM % 30 + 20))
+            if [ $i -lt 5 ]; then
+              echo "Retry $i/5: Waiting 30 seconds before retry..."
+              sleep 30
               i=$((i + 1))
             else
-              echo "Failed to create subnet ${each.key} after 8 attempts"
+              echo "Failed to create subnet ${each.key} after 5 attempts"
               exit 1
             fi
           fi
         done
       else
         echo "Subnet ${each.key} already exists, updating if needed..."
-
-        # Retry update as well to handle AnotherOperationInProgress on existing subnets
-        i=1
-        while [ $i -le 8 ]; do
-          if az network vnet subnet update \
-            --resource-group ${var.vnet_resource_group_name} \
-            --vnet-name ${var.vnet_name} \
-            --name ${each.key} \
-            ${each.value.create_nsg ? "--network-security-group ${azurerm_network_security_group.nsg[each.key].id}" : ""} \
-            ${each.value.delegation != null ? "--delegations ${each.value.delegation.service_delegation_name}" : ""} \
-            --private-endpoint-network-policies ${each.value.private_endpoint_network_policies} 2>&1; then
-            echo "✓ Subnet ${each.key} updated successfully"
-            break
-          else
-            if [ $i -lt 8 ]; then
-              echo "Retry $i/8: Waiting before retry due to concurrent operation..."
-              sleep $((RANDOM % 30 + 20))
-              i=$((i + 1))
-            else
-              echo "Failed to update subnet ${each.key} after 8 attempts"
-              exit 1
-            fi
-          fi
-        done
+        az network vnet subnet update \
+          --resource-group ${var.vnet_resource_group_name} \
+          --vnet-name ${var.vnet_name} \
+          --name ${each.key} \
+          ${each.value.create_nsg ? "--network-security-group ${azurerm_network_security_group.nsg[each.key].id}" : ""} \
+          --private-endpoint-network-policies ${each.value.private_endpoint_network_policies} \
+          ${each.value.delegation != null ? "--delegations ${each.value.delegation.service_delegation_name}" : ""}
       fi
     EOT
   }
@@ -127,6 +108,17 @@ resource "null_resource" "subnet_with_nsg" {
   }
 
   depends_on = [azurerm_network_security_group.nsg]
+}
+
+# Reference the created subnets as data sources
+# Subnets are created by null_resource above, we just reference them here
+data "azurerm_subnet" "subnets" {
+  for_each             = var.subnets
+  name                 = each.key
+  resource_group_name  = var.vnet_resource_group_name
+  virtual_network_name = var.vnet_name
+
+  depends_on = [null_resource.subnet_with_nsg]
 }
 
 # ------------------------------------------------------------------------------
@@ -158,39 +150,56 @@ resource "azurerm_network_security_rule" "nsg_rules" {
 }
 
 # ------------------------------------------------------------------------------
+# Route Tables
+# ------------------------------------------------------------------------------
+resource "azurerm_route_table" "route_table" {
+  for_each            = { for k, v in var.subnets : k => v if v.route_table != null }
+  name                = each.value.route_table.name
+  location            = var.location
+  resource_group_name = var.vnet_resource_group_name
+  tags                = var.tags
+}
+
+resource "azurerm_route" "routes" {
+  for_each = merge([
+    for subnet_key, subnet in var.subnets : {
+      for route_key, route in try(subnet.route_table.routes, {}) : "${subnet_key}-${route_key}" => merge(route, {
+        subnet_key = subnet_key
+        route_key  = route_key
+      })
+    } if subnet.route_table != null
+  ]...)
+
+  name                   = each.value.route_key
+  resource_group_name    = var.vnet_resource_group_name
+  route_table_name       = azurerm_route_table.route_table[each.value.subnet_key].name
+  address_prefix         = each.value.address_prefix
+  next_hop_type          = each.value.next_hop_type
+  next_hop_in_ip_address = try(each.value.next_hop_in_ip_address, null)
+}
+
+resource "azurerm_subnet_route_table_association" "route_table_association" {
+  for_each       = { for k, v in var.subnets : k => v if v.route_table != null }
+  subnet_id      = data.azurerm_subnet.subnets[each.key].id
+  route_table_id = azurerm_route_table.route_table[each.key].id
+
+  depends_on = [azurerm_route.routes]
+}
+
+# ------------------------------------------------------------------------------
 # Diagnostic settings for NSGs
 # ------------------------------------------------------------------------------
-# Uses az CLI instead of azurerm provider so that destroy tolerates a
-# CanNotDelete lock on the platform VNet RG (|| true on delete).
-resource "null_resource" "nsg_diagnostics" {
-  for_each = var.enable_diagnostic_settings ? { for k, v in var.subnets : k => v if v.create_nsg } : {}
+resource "azurerm_monitor_diagnostic_setting" "nsg_diagnostics" {
+  for_each                   = var.enable_diagnostic_settings ? { for k, v in var.subnets : k => v if v.create_nsg } : {}
+  name                       = "diag-${each.value.nsg_name != null ? each.value.nsg_name : "nsg-${each.key}"}"
+  target_resource_id         = azurerm_network_security_group.nsg[each.key].id
+  log_analytics_workspace_id = data.azurerm_log_analytics_workspace.log_analytics[0].id
 
-  triggers = {
-    diag_name = "diag-${each.value.nsg_name != null ? each.value.nsg_name : "nsg-${each.key}"}"
-    nsg_id    = azurerm_network_security_group.nsg[each.key].id
-    law_id    = var.log_analytics_workspace_id
+  enabled_log {
+    category = "NetworkSecurityGroupEvent"
   }
 
-  provisioner "local-exec" {
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-EOT
-      az monitor diagnostic-settings create \
-        --name "${self.triggers.diag_name}" \
-        --resource "${self.triggers.nsg_id}" \
-        --workspace "${self.triggers.law_id}" \
-        --logs '[{"category":"NetworkSecurityGroupEvent","enabled":true},{"category":"NetworkSecurityGroupRuleCounter","enabled":true}]'
-    EOT
+  enabled_log {
+    category = "NetworkSecurityGroupRuleCounter"
   }
-
-  provisioner "local-exec" {
-    when        = destroy
-    interpreter = ["/bin/bash", "-c"]
-    command     = <<-EOT
-      az monitor diagnostic-settings delete \
-        --name "${self.triggers.diag_name}" \
-        --resource "${self.triggers.nsg_id}" 2>/dev/null || true
-    EOT
-  }
-
-  depends_on = [azurerm_network_security_group.nsg]
 }

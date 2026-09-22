@@ -48,12 +48,6 @@ variable "admin_password" {
   sensitive   = true
 }
 
-variable "allow_extension_operations" {
-  description = "Allow VM extensions to be installed on this VM. Leave false unless you need one (e.g. AADLoginForWindows, Azure Monitor Agent) - extensions increase attack surface."
-  type        = bool
-  default     = false
-}
-
 # ========================================
 # Network Configuration Variables
 # ========================================
@@ -238,32 +232,21 @@ variable "log_analytics_workspace_id" {
 }
 
 # ========================================
-# Key Vault / Encryption Variables
+# Key Vault Variables
 # ========================================
 
 variable "key_vault_id" {
-  description = "ID of the Key Vault to store the VM password, and (when encryption_enabled is true) the vault holding key_vault_key_id — the module grants the disk encryption set's identity Key Vault Crypto Service Encryption User on this vault."
+  description = "ID of the Key Vault to store VM password"
   type        = string
 }
 
-variable "encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for the OS disk via a disk encryption set"
-  type        = bool
-  default     = false
-}
-
-variable "key_vault_key_id" {
-  description = "Key Vault key ID for OS disk customer-managed encryption. Required when encryption_enabled is true."
+variable "vm_password_secret_expiration_duration" {
+  description = "Duration for VM password secret expiry (e.g. 720h for 30 days)"
   type        = string
-  default     = null
-}
+  default     = "17520h"
 
-# ========================================
-# RBAC Variables
-# ========================================
-
-variable "reader_principal_ids" {
-  description = "Object IDs granted Reader on the VM and its network interface — required by Azure Bastion to let a user select this VM in the connect flow, in addition to VM sign-in credentials"
-  type        = list(string)
-  default     = []
+  validation {
+    condition     = can(regex("^[0-9]+h$", var.vm_password_secret_expiration_duration))
+    error_message = "vm_password_secret_expiration_duration must be in hours format, e.g. 720h."
+  }
 }

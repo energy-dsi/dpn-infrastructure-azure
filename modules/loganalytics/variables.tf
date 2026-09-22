@@ -23,13 +23,13 @@ variable "vnet_resource_group_name" {
   type        = string
 }
 
-variable "private_dns_zone_subscription_id" {
-  description = "Subscription ID hosting your private DNS zones"
+variable "connectivity_subscription_id" {
+  description = "Subscription ID for the connectivity platform (Private DNS zones)"
   type        = string
 }
 
 variable "private_dns_zone_resource_group" {
-  description = "Resource group name where private DNS zones are located"
+  description = "Resource group name where private DNS zones are located in connectivity subscription"
   type        = string
 }
 
@@ -52,4 +52,3 @@ variable "tags" {
   description = "A map of tags to add to the Log Analytics Workspace"
   type        = map(string)
 }
-

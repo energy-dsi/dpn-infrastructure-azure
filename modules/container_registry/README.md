@@ -2,11 +2,9 @@
 
 ## Purpose in this architecture
 
-This is the private registry your application's container images are pulled from. Whatever runs on the `aks` cluster - including a file-scanning consumer, if you build one as a container rather than an Azure Function - gets its images from here. The AKS cluster's identity and its kubelet identity are both automatically granted `AcrPull` so nodes can pull images without any registry credentials being configured in Kubernetes.
+Private Azure Container Registry for your application's container images. AKS's cluster and kubelet identities are automatically granted pull access; any other cluster's managed identity that also needs to pull from here can be added via `aks_external_acr_pull_principal_ids` in the root config.
 
-Enforcing image signing (Docker Content Trust) is **not available** through this module or the current AzureRM provider - Azure deprecated that feature for ACR in favor of policy-based signing (Notation/Ratify via Azure Policy), which is configured at the Azure Policy level, not through Terraform's `azurerm_container_registry` resource.
-
-This module deploys an Azure Container Registry with private endpoint connectivity, zone redundancy, geo-replication, and comprehensive security features.
+This module deploys an enterprise-grade Azure Container Registry with private endpoint connectivity, zone redundancy, geo-replication, and comprehensive security features.
 
 ## Features
 
@@ -31,23 +29,23 @@ This module deploys an Azure Container Registry with private endpoint connectivi
 
 ### Networking
 - **Private DNS Zone** - `privatelink.azurecr.io` with VNet linking
-- **Dedicated Subnet** - `acr` subnet (10.1.10.0/24)
+- **Dedicated Subnet** - `acr` subnet (10.0.10.0/24)
 - **Private Endpoint** - Single subresource: `registry`
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  VNet: vnet-dpn-dev-uks-01 (10.1.0.0/16)           │
+│  VNet: vnet-dpn-azure-uks-01 (10.0.0.0/16)           │
 │                                                     │
 │  ┌──────────────────────────────────────────────┐  │
-│  │ acr subnet (10.1.10.0/24)                    │  │
+│  │ acr subnet (10.0.10.0/24)                    │  │
 │  │   └─ ACR Private Endpoint                    │  │
 │  │      - privatelink.azurecr.io                │  │
 │  └──────────────────────────────────────────────┘  │
 │                                                     │
 │  ┌──────────────────────────────────────────────┐  │
-│  │ aks subnet (10.1.2.0/24)                    │  │
+│  │ aks subnet (10.0.2.0/24)                    │  │
 │  │   └─ AKS Cluster                             │  │
 │  │      - Pulls images via private endpoint     │  │
 │  └──────────────────────────────────────────────┘  │
@@ -56,7 +54,7 @@ This module deploys an Azure Container Registry with private endpoint connectivi
 ACR (Premium, Zone-Redundant)
 ├─ Private Endpoint (VNet Only)
 ├─ Geo-Replicas (Optional)
-└─ Retention Policy (7 days)
+├─ Retention Policy (7 days)
 ```
 
 ## Usage
@@ -67,9 +65,9 @@ ACR (Premium, Zone-Redundant)
 module "acr" {
   source = "./container_registry"
 
-  acr_name                              = "acrdpn"  # Must be globally unique, alphanumeric only
+  acr_name                              = "acrdpnazureuks01"  # Must be globally unique, alphanumeric only
   location                              = "UK South"
-  resource_group_name                   = "rg-acr-dev-uks-01"
+  resource_group_name                   = "rg-acr-dpn-azure-uks-01"
   
   # Premium SKU for private endpoints and zone redundancy
   sku                                   = "Premium"
@@ -77,12 +75,12 @@ module "acr" {
   public_network_access_enabled         = false
   
   # Existing VNet
-  vnet_name                             = "vnet-dpn-dev-uks-01"
-  vnet_resource_group_name              = "rg-dpn-dev-uks-01"
+  vnet_name                             = "vnet-dpn-azure-uks-01"
+  vnet_resource_group_name              = "rg-dpn-azure-uks-01"
   
   # Log Analytics
-  log_analytics_workspace_name          = "law-dpn-dev-uks-01"
-  log_analytics_resource_group_name     = "rg-log-analytics-dev-uks-01"
+  log_analytics_workspace_name          = "law-dpn-azure-uks-01"
+  log_analytics_resource_group_name     = "rg-law-dpn-azure-uks-01"
   
   tags = {
     Environment = "Development"
@@ -98,9 +96,9 @@ module "acr" {
 module "acr" {
   source = "./container_registry"
 
-  acr_name                              = "acrdpn"
+  acr_name                              = "acrdpnazureuks01"
   location                              = "UK South"
-  resource_group_name                   = "rg-acr-dev-uks-01"
+  resource_group_name                   = "rg-acr-dpn-azure-uks-01"
   
   # SKU and redundancy
   sku                                   = "Premium"
@@ -112,20 +110,21 @@ module "acr" {
   network_rule_default_action           = "Deny"
   allowed_ip_ranges                     = []  # Empty = deny all public access
   
-  # Retention policy
+  # Retention and trust policies
   retention_policy_enabled              = true
   retention_policy_days                 = 7
+  trust_policy_enabled                  = true
   
   # Customer-managed encryption (optional)
   encryption_enabled                    = false
   key_vault_key_id                      = null
   
-  # Geo-replication for disaster recovery (Premium SKU only - roughly doubles
-  # registry storage cost per additional region; not set by default)
+  # Geo-replication for disaster recovery
   georeplications = {
     "northeurope" = {
-      location                = "North Europe"
-      zone_redundancy_enabled = true
+      location                  = "North Europe"
+      zone_redundancy_enabled   = true
+      regional_endpoint_enabled = false
     }
   }
   
@@ -144,12 +143,12 @@ module "acr" {
   }
   
   # Existing VNet
-  vnet_name                             = "vnet-dpn-dev-uks-01"
-  vnet_resource_group_name              = "rg-dpn-dev-uks-01"
+  vnet_name                             = "vnet-dpn-azure-uks-01"
+  vnet_resource_group_name              = "rg-dpn-azure-uks-01"
   
   # Log Analytics
-  log_analytics_workspace_name          = "law-dpn-dev-uks-01"
-  log_analytics_resource_group_name     = "rg-log-analytics-dev-uks-01"
+  log_analytics_workspace_name          = "law-dpn-azure-uks-01"
+  log_analytics_resource_group_name     = "rg-law-dpn-azure-uks-01"
   
   tags = {
     Environment = "Development"
@@ -171,17 +170,16 @@ module "acr" {
 | `public_network_access_enabled` | Allow public access | bool | `false` | no |
 | `admin_enabled` | Enable admin account | bool | `false` | no |
 | `anonymous_pull_enabled` | Allow anonymous pulls | bool | `false` | no |
-| `vnet_name` | Existing VNet name | string | `vnet-dpn-dev-uks-01` | no |
-| `vnet_resource_group_name` | VNet resource group | string | `rg-dpn-dev-uks-01` | no |
+| `vnet_name` | Existing VNet name | string | `vnet-dpn-azure-uks-01` | no |
+| `vnet_resource_group_name` | VNet resource group | string | `rg-dpn-azure-uks-01` | no |
 | `network_rules_enabled` | Enable network rules | bool | `true` | no |
 | `network_rule_default_action` | Default action (Allow/Deny) | string | `Deny` | no |
 | `allowed_ip_ranges` | Allowed IP ranges | list(string) | `[]` | no |
 | `retention_policy_enabled` | Auto-cleanup untagged (Premium) | bool | `true` | no |
 | `retention_policy_days` | Retention days (0-365) | number | `7` | no |
-| `quarantine_policy_enabled` | Hold every pushed image until an external scanner clears it (Premium). Requires a scanning integration this codebase doesn't provide - leave `false` unless you have one, otherwise every push becomes permanently stuck. | bool | `false` | no |
+| `trust_policy_enabled` | Accepted but not wired to any resource attribute - has no effect. Docker Content Trust is deprecated by Azure for ACR; see Image Signing below | bool | `false` | no |
 | `encryption_enabled` | Customer-managed keys (Premium) | bool | `false` | no |
 | `key_vault_key_id` | Key Vault key ID | string | `null` | no |
-| `key_vault_id` | Resource ID of the Key Vault holding `key_vault_key_id` — required when `encryption_enabled` is true; the module grants the ACR encryption identity `Key Vault Crypto Service Encryption User` on it | string | `null` | no |
 | `georeplications` | Geo-replication config (Premium) | map(object) | `{}` | no |
 | `create_scope_maps` | Create default scope maps | bool | `false` | no |
 | `webhooks` | Webhook configurations | map(object) | `{}` | no |
@@ -193,7 +191,7 @@ module "acr" {
 
 - `acr_id` - ACR resource ID
 - `acr_name` - ACR name
-- `acr_login_server` - Login server URL (e.g., `acrdpn.azurecr.io`)
+- `acr_login_server` - Login server URL (e.g., `acrdpnazureuks01.azurecr.io`)
 - `acr_admin_username` - Admin username (if enabled)
 - `acr_admin_password` - Admin password (sensitive, if enabled)
 - `private_endpoint_id` - Private endpoint ID
@@ -201,7 +199,6 @@ module "acr" {
 - `acr_subnet_id` - ACR subnet ID
 - `private_dns_zone_id` - Private DNS zone ID
 - `user_assigned_identity_id` - Managed identity ID (if encryption enabled)
-- `georeplications` - Map of geo-replication locations
 
 ## SKU Comparison
 
@@ -228,19 +225,19 @@ module "acr" {
 
 ### 2. Azure CLI
 ```bash
-az acr login --name acrdpn
+az acr login --name acrdpnazureuks01
 ```
 
 ### 3. Docker Login with Managed Identity
 ```bash
-TOKEN=$(az acr login --name acrdpn --expose-token --output tsv --query accessToken)
-echo $TOKEN | docker login acrdpn.azurecr.io -u 00000000-0000-0000-0000-000000000000 --password-stdin
+TOKEN=$(az acr login --name acrdpnazureuks01 --expose-token --output tsv --query accessToken)
+echo $TOKEN | docker login acrdpnazureuks01.azurecr.io -u 00000000-0000-0000-0000-000000000000 --password-stdin
 ```
 
 ### 4. Scope Map Tokens (if created)
 ```bash
 # Create token from scope map
-az acr token create --name my-token --registry acrdpn --scope-map pull-scope
+az acr token create --name my-token --registry acrdpnazureuks01 --scope-map pull-scope
 ```
 
 ## Using with AKS
@@ -252,12 +249,12 @@ The ACR is automatically accessible from AKS when:
 
 ```bash
 # Pull image in AKS pod
-docker pull acrdpn.azurecr.io/myapp:v1.0
+docker pull acrdpnazureuks01.azurecr.io/myapp:v1.0
 ```
 
 ## Image Signing
 
-Docker Content Trust is deprecated by Azure for ACR and is not configurable through this module. To enforce that only signed images can be pulled/deployed, use Azure Policy with Notation/Ratify instead - that's a policy-level control, not a Terraform setting on the registry itself.
+Docker Content Trust is deprecated by Azure for ACR and is not configurable through this module. To enforce that only signed images can be pulled/deployed, use Azure Policy with Notation/Ratify instead - that's a policy-level control, not a Terraform setting on the registry itself. This codebase already provisions the Ratify workload identity and a Notation signing certificate for that purpose - see `modules/workload_identity`'s `ratify_identity` block and `keyvault_initial_certificates` in the root config.
 
 ## Retention Policy
 
@@ -288,6 +285,6 @@ All logs are sent to Log Analytics:
 
 - ACR names must be **globally unique** and **alphanumeric only**
 - Premium SKU required for private endpoints, zone redundancy, geo-replication
-- Subnet `10.1.10.0/24` will be created - ensure no conflicts
+- Subnet `10.0.10.0/24` will be created - ensure no conflicts
 - Public access disabled by default for security
 - Admin account disabled - use managed identities

@@ -52,8 +52,9 @@ The pipeline's final job checks `tofu output` for the expected resource IDs (VNe
 To connect and look around:
 
 ```bash
-# Via the jump host (see modules/bastion + modules/vm) - connect through Azure Bastion in the Portal,
-# then from that VM:
+# Via the jump host (see modules/bastion + modules/vm) - connect through Azure Bastion in the Portal
+# if bastion_enabled = true, or via your own AVD desktop if you're using that instead - then from
+# that VM:
 az aks get-credentials --resource-group <your-aks-rg> --name <your-aks-name>
 kubectl get nodes
 ```

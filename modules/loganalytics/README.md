@@ -1,106 +1,68 @@
-﻿# Log Analytics Workspace with Private Link
+# Log Analytics Workspace Module
 
 ## Purpose in this architecture
 
-This is the central observability sink for the whole deployment - every other module's diagnostic settings (`enable_diagnostic_settings`) point here: AKS, Key Vault, ACR, storage, Event Grid, Service Bus, the VM, and Bastion all send their logs/metrics to this one workspace. If you're troubleshooting anything in this deployment - including the file-scanning pattern described in the root `README.md` - this is where to look first. Pair with `modules/ampls` if you need ingestion/query traffic itself to be private-only rather than just the resource being reachable privately.
+Central Log Analytics workspace. Every other module's diagnostic settings point here.
 
-This OpenTofu module deploys an Azure Log Analytics Workspace with Private Link connectivity using your existing VNet.
+Unlike this codebase's other modules, this one does **not** deploy a private endpoint - see its own `main.tf` comment: Log Analytics is treated as secure by default (all traffic over HTTPS, access controlled via Azure RBAC, reached over the Azure backbone network), so no `privatelink.*` DNS zones or VNet links are created for it either.
 
-## Resources Created
+## Features
 
-1. **Log Analytics Workspace** - With 730 days retention
-2. **Subnet** - `loganalytics` subnet (10.1.7.0/24) in your existing VNet
-3. **Private Endpoint** - For secure connectivity to Log Analytics
-4. **Private DNS Zones** - Required zones for Log Analytics private link:
-   - `privatelink.monitor.azure.com`
-   - `privatelink.oms.opinsights.azure.com`
-   - `privatelink.ods.opinsights.azure.com`
-   - `privatelink.agentsvc.azure-automation.net`
-   - `privatelink.blob.core.windows.net`
-5. **VNet Links** - Linking all DNS zones to your existing VNet
+- **Log Analytics Workspace** - `sku` and `retention_in_days` are both required inputs (no default), matching whatever the calling environment sets in `dpn_infrastructure.tfvars` (`PerGB2018` / `730` in the example)
+- **System or User-Assigned identity** - via `identity_type`
+- Own resource group (`azurerm_resource_group.log_analytics`)
 
-## Customer-Managed Key (CMK) Encryption
-
-Not implemented in this module. Log Analytics CMK requires linking the workspace
-to an `azurerm_log_analytics_cluster`, which carries its own minimum daily
-capacity commitment (a fixed, non-trivial cost regardless of actual ingestion
-volume) — this is a dedicated infrastructure decision, not a toggle on the
-workspace itself, so it is not enabled by default here. If your compliance
-requirements mandate CMK for logs, provision an `azurerm_log_analytics_cluster`
-separately and link this workspace to it.
-
-## Prerequisites
-
-- Existing VNet in resource group `rg-dpn-dev-uks-01`
-- The VNet must have available address space for subnet 10.1.7.0/24
-- Appropriate Azure permissions to create resources
-
-## Variables
-
-| Name | Description | Default |
-|------|-------------|---------|
-| `log_analytics_workspace_name` | Name of the Log Analytics Workspace | Required |
-| `location` | Azure region | Required |
-| `log_analytics_resource_group_name` | Resource group for Log Analytics | Required |
-| `vnet_name` | Existing VNet name | `vnet-dpn-dev-uks-01` |
-| `vnet_resource_group_name` | VNet resource group | `rg-dpn-dev-uks-01` |
-| `tags` | Resource tags | Required |
-
-## Usage Example
+## Usage
 
 ```hcl
-module "log_analytics" {
-  source = "./loganalytics"
+module "loganalytics" {
+  source = "../modules/loganalytics"
 
-  log_analytics_workspace_name      = "law-dpn-dev-uks-01"
-  location                          = "UK South"
-  log_analytics_resource_group_name = "rg-log-analytics-dev-uks-01"
-  
-  # These defaults match your existing VNet
-  vnet_name                = "vnet-dpn-dev-uks-01"
-  vnet_resource_group_name = "rg-dpn-dev-uks-01"
+  log_analytics_workspace_name      = var.log_analytics_workspace_name
+  log_analytics_resource_group_name = var.log_analytics_resource_group_name
+  location                          = var.location
+  sku                                = var.log_analytics_sku
+  retention_in_days                 = var.log_analytics_retention_in_days
+  identity_type                      = var.log_analytics_identity_type
+  vnet_name                          = var.vnet_name
+  vnet_resource_group_name           = var.vnet_resource_group_name
+  connectivity_subscription_id       = var.connectivity_subscription_id
+  private_dns_zone_resource_group    = var.private_dns_zone_resource_group
+  tags                                = var.tags
 
-  tags = {
-    Environment = "Development"
-    Project     = "DPN"
-    ManagedBy   = "OpenTofu"
+  providers = {
+    azurerm              = azurerm
+    azurerm.connectivity = azurerm.connectivity
   }
+
+  depends_on = [module.networking]
 }
 ```
 
-## Deployment Steps
+## Inputs
 
-1. **Initialize OpenTofu:**
-   ```powershell
-   tofu init
-   ```
-
-2. **Review the plan:**
-   ```powershell
-   tofu plan
-   ```
-
-3. **Apply the configuration:**
-   ```powershell
-   tofu apply
-   ```
+| Name | Description | Type | Default | Required |
+|------|-------------|------|---------|----------|
+| `log_analytics_workspace_name` | Name of the Log Analytics Workspace | string | - | yes |
+| `location` | Azure region | string | - | yes |
+| `log_analytics_resource_group_name` | Resource group for Log Analytics (created by this module) | string | - | yes |
+| `sku` | SKU for the workspace | string | - | yes |
+| `retention_in_days` | Data retention in days (30-730) | number | - | yes |
+| `identity_type` | Managed identity type for the workspace | string | - | yes |
+| `vnet_name` | Existing VNet name | string | - | yes |
+| `vnet_resource_group_name` | Resource group of the VNet | string | - | yes |
+| `connectivity_subscription_id` | Subscription ID for the connectivity platform (Private DNS zones) | string | - | yes |
+| `private_dns_zone_resource_group` | Resource group of the private DNS zones in the connectivity subscription | string | - | yes |
+| `tags` | Resource tags | map(string) | - | yes |
 
 ## Outputs
 
 - `log_analytics_workspace_id` - Resource ID of the workspace
 - `log_analytics_workspace_name` - Name of the workspace
 - `log_analytics_workspace_workspace_id` - Workspace GUID
-- `private_endpoint_id` - Private endpoint resource ID
-- `private_endpoint_ip_address` - Private IP address
-- `subnet_id` - Log Analytics subnet ID
+- `log_analytics_workspace_primary_shared_key` - Primary shared key for the workspace (sensitive)
 
-## Network Connectivity
+## Notes
 
-All traffic to Log Analytics will route through the private endpoint in subnet `10.1.7.0/24`. The private DNS zones ensure that Log Analytics API calls resolve to private IP addresses within your VNet.
-
-## Important Notes
-
-- The subnet `10.1.7.0/24` will be created in your existing VNet
-- Ensure this address range doesn't conflict with existing subnets
-- Private Link requires specific DNS zones for full functionality
-- All resources will be tagged as specified
+- `vnet_name`, `vnet_resource_group_name`, `connectivity_subscription_id`, and `private_dns_zone_resource_group` are all required inputs, but this module doesn't use them to create anything - they only back a `data "azurerm_virtual_network" "existing_vnet"` lookup that nothing else in the module references. In practice this means `tofu plan` fails if the named VNet doesn't exist, even though no private endpoint or DNS wiring is actually created here. This is inherited from an earlier, private-endpoint version of this module; clean it up if you don't need the VNet-existence check.
+- There is no `subnet_id` input and no `loganalytics` subnet requirement, despite what the root `dpn_infrastructure.tfvars` subnet map's naming might suggest for other modules.

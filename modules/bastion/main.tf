@@ -16,7 +16,7 @@ terraform {
 # Developer SKU (var.sku == "Developer") attaches directly to the VNet via
 # virtual_network_id — no dedicated AzureBastionSubnet, no NSG, no public IP
 # at all. This matches the pattern already used elsewhere in the org (e.g.
-# vnet-dpn-dev-uks-01-bastion) and avoids the AzureBastionSubnet NSG
+# vnet-dpn-azure-uks-01-bastion) and avoids the AzureBastionSubnet NSG
 # entirely, so it isn't subject to NSG-level policies like Deny-Nsg-Any-Any.
 # Basic/Standard/Premium instead use a dedicated AzureBastionSubnet + public
 # IP via subnet_id — see docs/Pipeline-Configuration.md for the full history.

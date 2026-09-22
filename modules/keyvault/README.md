@@ -2,12 +2,9 @@
 
 ## Purpose in this architecture
 
-This Key Vault is the secrets/keys backbone for the whole DPN deployment. Two distinct things live here:
+Central secrets/keys store for the deployment. Holds application secrets (`keyvault_initial_secrets`), rotation-policy-managed keys (`keyvault_initial_keys`), and a self-signed Notation signing certificate (`keyvault_initial_certificates`) used for AKS image-signature verification via Ratify. Of the modules in this build, only `container_registry` currently consumes a key from here for its own customer-managed-key encryption - `aks`, `storage`, `vm`, and `service_bus` don't reference a Key Vault key for encryption at rest.
 
-- **The customer-managed key (CMK)** used to encrypt every other resource in this architecture that supports it - ACR, AKS node disks and etcd/Secrets, Service Bus, VM OS disk, and all storage accounts all reference a key created here (typically `"cmk-key"` in `keyvault_initial_keys`) rather than each managing their own. Centralizing it here means one key rotation/expiry policy governs encryption across the whole deployment.
-- **Application secrets** (`keyvault_initial_secrets`) and any secrets your application adds at runtime via `workload_identity` (see `modules/workload_identity`) - e.g. the VM admin password, or credentials your AKS-hosted application needs.
-
-This module deploys an Azure Key Vault with private endpoint connectivity, RBAC authorization, network security, and automated key rotation policies.
+This module deploys an enterprise-grade Azure Key Vault with private endpoint connectivity, RBAC authorization, network security, and automated key rotation policies.
 
 ## Features
 
@@ -38,23 +35,23 @@ This module deploys an Azure Key Vault with private endpoint connectivity, RBAC 
 
 ### Networking
 - **Private DNS Zone** - `privatelink.vaultcore.azure.net` with VNet linking
-- **Dedicated Subnet** - `keyvault` subnet (10.1.5.0/24)
+- **Dedicated Subnet** - `keyvault` subnet (10.0.5.0/24)
 - **Private Endpoint** - Single subresource: `vault`
 
 ## Architecture
 
 ```
 ┌─────────────────────────────────────────────────────┐
-│  VNet: vnet-dpn-dev-uks-01 (10.1.0.0/16)           │
+│  VNet: vnet-dpn-azure-uks-01 (10.0.0.0/16)           │
 │                                                     │
 │  ┌──────────────────────────────────────────────┐  │
-│  │ keyvault subnet (10.1.5.0/24)                │  │
+│  │ keyvault subnet (10.0.5.0/24)                │  │
 │  │   └─ Key Vault Private Endpoint              │  │
 │  │      - privatelink.vaultcore.azure.net       │  │
 │  └──────────────────────────────────────────────┘  │
 │                                                     │
 │  ┌──────────────────────────────────────────────┐  │
-│  │ aks subnet (10.1.2.0/24)                    │  │
+│  │ aks subnet (10.0.2.0/24)                    │  │
 │  │   └─ AKS Cluster                             │  │
 │  │      - Key Vault CSI Driver                  │  │
 │  │      - Access secrets via managed identity   │  │
@@ -80,9 +77,9 @@ Key Vault (RBAC-enabled)
 module "keyvault" {
   source = "./keyvault"
 
-  keyvault_name                         = "kv-dpn-dev-uks"
+  keyvault_name                         = "kv-dpn-azure-uks-01"
   location                              = "UK South"
-  resource_group_name                   = "rg-keyvault-dev-uks-01"
+  resource_group_name                   = "rg-kv-dpn-azure-uks-01"
   
   # SKU
   keyvault_sku_name                     = "standard"  # or "premium" for HSM
@@ -93,15 +90,15 @@ module "keyvault" {
   public_network_access_enabled         = false
   
   # Existing VNet
-  vnet_name                             = "vnet-dpn-dev-uks-01"
-  vnet_resource_group_name              = "rg-dpn-dev-uks-01"
+  vnet_name                             = "vnet-dpn-azure-uks-01"
+  vnet_resource_group_name              = "rg-dpn-azure-uks-01"
   
   # RBAC assignments
   key_vault_admin_object_ids            = ["xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"]
   
   # Log Analytics
-  log_analytics_workspace_name          = "law-dpn-dev-uks-01"
-  log_analytics_resource_group_name     = "rg-log-analytics-dev-uks-01"
+  log_analytics_workspace_name          = "law-dpn-azure-uks-01"
+  log_analytics_resource_group_name     = "rg-law-dpn-azure-uks-01"
   
   tags = {
     Environment = "Development"
@@ -117,9 +114,9 @@ module "keyvault" {
 module "keyvault" {
   source = "./keyvault"
 
-  keyvault_name                         = "kv-dpn-dev-uks"
+  keyvault_name                         = "kv-dpn-azure-uks-01"
   location                              = "UK South"
-  resource_group_name                   = "rg-keyvault-dev-uks-01"
+  resource_group_name                   = "rg-kv-dpn-azure-uks-01"
   
   # SKU - use premium for HSM-backed keys
   keyvault_sku_name                     = "premium"
@@ -152,25 +149,19 @@ module "keyvault" {
     "zzzzzzzz-zzzz-zzzz-zzzz-zzzzzzzzzzzz"  # AKS managed identity
   ]
   
-  # Initial secrets - always set expiration_date (RFC3339); secrets with none never expire
+  # Initial secrets
   initial_secrets = {
-    "database-password" = {
-      value           = "P@ssw0rd123!"
-      expiration_date = "2027-01-01T00:00:00Z"
-    }
-    "api-key" = {
-      value           = "sk-1234567890abcdef"
-      expiration_date = "2027-01-01T00:00:00Z"
-    }
+    "database-password"     = "P@ssw0rd123!"
+    "api-key"               = "sk-1234567890abcdef"
+    "storage-connection"    = "DefaultEndpointsProtocol=https;..."
   }
   
-  # Initial keys with rotation - always set expiration_date (RFC3339); keys with none never expire
+  # Initial keys with rotation
   initial_keys = {
     "encryption-key" = {
       key_type                      = "RSA"
       key_size                      = 2048
       key_opts                      = ["decrypt", "encrypt", "sign", "unwrapKey", "verify", "wrapKey"]
-      expiration_date                = "2027-01-01T00:00:00Z"
       enable_rotation               = true
       rotation_time_before_expiry   = "P30D"   # Rotate 30 days before expiry
       rotation_expire_after         = "P90D"   # Expire after 90 days
@@ -180,18 +171,17 @@ module "keyvault" {
       key_type        = "RSA"
       key_size        = 4096
       key_opts        = ["sign", "verify"]
-      expiration_date  = "2027-01-01T00:00:00Z"
       enable_rotation = false
     }
   }
   
   # Existing VNet
-  vnet_name                             = "vnet-dpn-dev-uks-01"
-  vnet_resource_group_name              = "rg-dpn-dev-uks-01"
+  vnet_name                             = "vnet-dpn-azure-uks-01"
+  vnet_resource_group_name              = "rg-dpn-azure-uks-01"
   
   # Log Analytics
-  log_analytics_workspace_name          = "law-dpn-dev-uks-01"
-  log_analytics_resource_group_name     = "rg-log-analytics-dev-uks-01"
+  log_analytics_workspace_name          = "law-dpn-azure-uks-01"
+  log_analytics_resource_group_name     = "rg-law-dpn-azure-uks-01"
   
   tags = {
     Environment = "Development"
@@ -216,8 +206,8 @@ module "keyvault" {
 | `enabled_for_deployment` | Enable for VM deployment | bool | `true` | no |
 | `enabled_for_template_deployment` | Enable for ARM templates | bool | `true` | no |
 | `public_network_access_enabled` | Allow public access | bool | `false` | no |
-| `vnet_name` | Existing VNet name | string | `vnet-dpn-dev-uks-01` | no |
-| `vnet_resource_group_name` | VNet resource group | string | `rg-dpn-dev-uks-01` | no |
+| `vnet_name` | Existing VNet name | string | `vnet-dpn-azure-uks-01` | no |
+| `vnet_resource_group_name` | VNet resource group | string | `rg-dpn-azure-uks-01` | no |
 | `network_acls_enabled` | Enable network ACLs | bool | `true` | no |
 | `network_acls_bypass` | ACL bypass (AzureServices/None) | string | `AzureServices` | no |
 | `network_acls_default_action` | Default action (Allow/Deny) | string | `Deny` | no |
@@ -226,7 +216,7 @@ module "keyvault" {
 | `key_vault_admin_object_ids` | Admin role object IDs | list(string) | `[]` | no |
 | `key_vault_secrets_officer_object_ids` | Secrets Officer role object IDs | list(string) | `[]` | no |
 | `key_vault_secrets_user_object_ids` | Secrets User role object IDs | list(string) | `[]` | no |
-| `initial_secrets` | Initial secrets map (each entry: `value`, optional `expiration_date`) | map(object) | `{}` | no |
+| `initial_secrets` | Initial secrets map | map(string) | `{}` | no |
 | `initial_keys` | Initial keys map | map(object) | `{}` | no |
 | `log_analytics_workspace_name` | Log Analytics workspace | string | - | yes |
 | `log_analytics_resource_group_name` | Log Analytics RG | string | - | yes |
@@ -236,7 +226,7 @@ module "keyvault" {
 
 - `keyvault_id` - Key Vault resource ID
 - `keyvault_name` - Key Vault name
-- `keyvault_uri` - Key Vault URI (e.g., `https://kv-dpn-dev-uks.vault.azure.net/`)
+- `keyvault_uri` - Key Vault URI (e.g., `https://kv-dpn-azure-uks-01.vault.azure.net/`)
 - `keyvault_tenant_id` - Tenant ID
 - `private_endpoint_id` - Private endpoint ID
 - `private_endpoint_ip_address` - Private IP address
@@ -295,7 +285,7 @@ metadata:
 spec:
   provider: azure
   parameters:
-    keyvaultName: "kv-dpn-dev-uks"
+    keyvaultName: "kv-dpn-azure-uks-01"
     tenantId: "xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx"
     objects: |
       array:
@@ -308,7 +298,7 @@ spec:
 
 ### 1. Azure CLI
 ```bash
-az keyvault secret show --vault-name kv-dpn-dev-uks --name database-password
+az keyvault secret show --vault-name kv-dpn-azure-uks-01 --name database-password
 ```
 
 ### 2. Managed Identity (Recommended)
@@ -361,7 +351,7 @@ All operations logged to Log Analytics:
 
 - Key Vault names must be **3-24 characters**, alphanumerics and hyphens only
 - Key Vault names must be **globally unique** (DNS name)
-- Subnet `10.1.5.0/24` will be created - ensure no conflicts
+- Subnet `10.0.5.0/24` will be created - ensure no conflicts
 - Public access disabled by default for security
 - RBAC assignments require proper Azure AD permissions
 - Initial secrets stored in OpenTofu state (use secure backend)

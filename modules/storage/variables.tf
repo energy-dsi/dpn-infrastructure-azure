@@ -19,16 +19,16 @@ variable "account_tier" {
   default     = "Standard"
 }
 
-variable "sas_expiration_period" {
-  description = "CKV2_AZURE_41: max lifetime for account-level SAS tokens, format DD.HH:MM:SS"
-  type        = string
-  default     = "07.00:00:00"
-}
-
 variable "replication_type" {
   description = "Storage account replication type"
   type        = string
   default     = "LRS"
+}
+
+variable "sas_expiration_period" {
+  description = "CKV2_AZURE_41: max lifetime for account-level SAS tokens, format DD.HH:MM:SS"
+  type        = string
+  default     = "07.00:00:00"
 }
 
 variable "account_kind" {
@@ -61,12 +61,6 @@ variable "min_tls_version" {
   default     = "TLS1_2"
 }
 
-variable "infrastructure_encryption_enabled" {
-  description = "Enable infrastructure (double) encryption at rest, an additional encryption layer below the platform-managed/CMK encryption layer. No additional Azure cost. ForceNew - can only be set at account creation, not toggled on an existing storage account."
-  type        = bool
-  default     = true
-}
-
 variable "enable_https_traffic_only" {
   description = "Enable HTTPS traffic only"
   type        = bool
@@ -74,13 +68,7 @@ variable "enable_https_traffic_only" {
 }
 
 variable "shared_access_key_enabled" {
-  description = "Enable storage account key (Shared Key) authorization. Leave false to force Azure AD/RBAC-only access - this module already grants access via Storage Blob Data Contributor/Reader role assignments, so Shared Key auth is not needed unless a consumer specifically requires account-key access."
-  type        = bool
-  default     = false
-}
-
-variable "queue_logging_enabled" {
-  description = "Enable read/write/delete logging for the Queue service"
+  description = "Enable shared access key"
   type        = bool
   default     = true
 }
@@ -144,14 +132,8 @@ variable "dev_team_spn_object_id" {
   type        = string
 }
 
-variable "blob_contributor_additional_principal_ids" {
+variable "additional_blob_contributor_principal_ids" {
   description = "Additional principal IDs to grant Storage Blob Data Contributor role"
-  type        = list(string)
-  default     = []
-}
-
-variable "blob_reader_principal_ids" {
-  description = "Principal IDs to grant Storage Blob Data Reader role"
   type        = list(string)
   default     = []
 }
@@ -162,45 +144,33 @@ variable "create_blob_endpoint" {
   default     = true
 }
 
+variable "file_share_name" {
+  description = "Name of the Azure Files share to create"
+  type        = string
+  default     = ""
+}
+
+variable "file_share_quota_gb" {
+  description = "Quota for the Azure Files share in GB"
+  type        = number
+  default     = 1
+}
+
+variable "create_file_endpoint" {
+  description = "Create private endpoint for Azure Files"
+  type        = bool
+  default     = false
+}
+
 variable "subnet_id" {
   description = "Subnet ID for private endpoint"
   type        = string
 }
 
 variable "blob_private_dns_zone_id" {
-  description = "Full ARM resource ID of the privatelink.blob.core.windows.net Private DNS zone. When set, OpenTofu manages the private_dns_zone_group so A records land in the correct zone."
-  type        = string
-  default     = null
-}
-
-variable "create_file_share" {
-  description = "Create an Azure Files share on this storage account"
-  type        = bool
-  default     = false
-}
-
-variable "file_share_name" {
-  description = "Name of the Azure Files share (required when create_file_share is true)"
+  description = "Private DNS zone ID for blob storage (deprecated - will use data source)"
   type        = string
   default     = ""
-}
-
-variable "file_share_quota_gb" {
-  description = "Quota, in GB, for the Azure Files share"
-  type        = number
-  default     = 100
-}
-
-variable "create_file_endpoint" {
-  description = "Create private endpoint for the file (Azure Files) subresource"
-  type        = bool
-  default     = false
-}
-
-variable "file_private_dns_zone_id" {
-  description = "Full ARM resource ID of the privatelink.file.core.windows.net Private DNS zone. When set, OpenTofu manages the private_dns_zone_group so A records land in the correct zone."
-  type        = string
-  default     = null
 }
 
 variable "private_dns_zone_resource_group" {
@@ -208,8 +178,8 @@ variable "private_dns_zone_resource_group" {
   type        = string
 }
 
-variable "private_dns_zone_subscription_id" {
-  description = "Subscription ID hosting your private DNS zones"
+variable "connectivity_subscription_id" {
+  description = "Subscription ID for connectivity resources"
   type        = string
 }
 
@@ -217,24 +187,6 @@ variable "enable_diagnostic_settings" {
   description = "Enable diagnostic settings"
   type        = bool
   default     = true
-}
-
-variable "encryption_enabled" {
-  description = "Enable customer-managed key (CMK) encryption for this storage account"
-  type        = bool
-  default     = false
-}
-
-variable "key_vault_key_id" {
-  description = "Key Vault key ID for customer-managed encryption. Required when encryption_enabled is true."
-  type        = string
-  default     = null
-}
-
-variable "key_vault_id" {
-  description = "Resource ID of the Key Vault holding key_vault_key_id. Required when encryption_enabled is true — the module grants the storage encryption identity Key Vault Crypto Service Encryption User on this vault so it can wrap/unwrap the CMK."
-  type        = string
-  default     = null
 }
 
 variable "log_analytics_workspace_id" {

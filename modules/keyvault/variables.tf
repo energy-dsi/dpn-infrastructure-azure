@@ -38,6 +38,7 @@ variable "soft_delete_retention_days" {
 variable "purge_protection_enabled" {
   description = "Enable purge protection for the key vault"
   type        = bool
+  default     = true
 }
 
 variable "enabled_for_disk_encryption" {
@@ -67,11 +68,6 @@ variable "vnet_name" {
 
 variable "vnet_resource_group_name" {
   description = "The name of the resource group in which the virtual network is located"
-  type        = string
-}
-
-variable "vnet_subnet_name" {
-  description = "The name of the subnet for the Key Vault private endpoint"
   type        = string
 }
 
@@ -108,8 +104,8 @@ variable "allowed_subnet_ids" {
   type        = list(string)
 }
 
-variable "private_dns_zone_subscription_id" {
-  description = "Subscription ID hosting your private DNS zones"
+variable "connectivity_subscription_id" {
+  description = "Subscription ID for the connectivity platform (Private DNS zones)"
   type        = string
 }
 
@@ -132,38 +128,35 @@ variable "key_vault_secrets_user_object_ids" {
   type        = list(string)
 }
 
-variable "key_vault_crypto_officer_object_ids" {
-  description = "List of object IDs to grant Key Vault Crypto Officer role"
-  type        = list(string)
-  default     = []
-}
-
-variable "key_vault_crypto_user_object_ids" {
-  description = "List of object IDs to grant Key Vault Crypto User role"
-  type        = list(string)
-  default     = []
-}
-
 variable "initial_secrets" {
-  description = "Map of initial secrets to create in the key vault. Set expiration_date (RFC3339, e.g. \"2027-01-01T00:00:00Z\") on every entry - secrets without one never expire."
-  type = map(object({
-    value           = string
-    expiration_date = optional(string)
-  }))
+  description = "Map of initial secrets to create in the key vault"
+  type        = map(string)
 }
 
 variable "initial_keys" {
-  description = "Map of initial keys to create in the key vault. Set expiration_date (RFC3339, e.g. \"2027-01-01T00:00:00Z\") on every entry - keys without one never expire."
+  description = "Map of initial keys to create in the key vault"
   type = map(object({
     key_type                      = string
     key_size                      = number
     key_opts                      = list(string)
-    expiration_date               = optional(string)
-    enable_rotation               = optional(bool, true)
     rotation_time_before_expiry   = optional(string, "P30D")
     rotation_expire_after         = optional(string, "P90D")
     rotation_notify_before_expiry = optional(string, "P29D")
   }))
+}
+
+variable "initial_certificates" {
+  description = "Map of self-signed certificates to create in the key vault (e.g. a Notation image-signing certificate). Separate from initial_keys because Notation's signing model needs a leaf certificate, not a bare key."
+  type = map(object({
+    key_type                 = string
+    key_size                 = number
+    exportable               = bool
+    key_usage                = list(string)
+    subject                  = string
+    validity_in_months       = number
+    renew_days_before_expiry = number
+  }))
+  default = {}
 }
 
 variable "log_analytics_workspace_name" {
@@ -185,31 +178,18 @@ variable "enable_diagnostic_settings" {
   type        = bool
 }
 
-variable "rbac_authorization_enabled" {
-  description = "Enable RBAC authorization for Key Vault"
-  type        = bool
-}
-
 variable "subnet_id" {
-  description = "Keyvault subnet ID passed directly from the root. When set, the azurerm_subnet data source is skipped (required on first deploy when the subnet does not yet exist in Azure)."
+  description = "Subnet ID for Key Vault private endpoint"
   type        = string
-  default     = null
 }
 
 variable "log_analytics_workspace_id" {
-  description = "Log Analytics workspace ID passed directly from the root. When set, the data source lookup is skipped (required on first deploy when the LAW does not yet exist)."
+  description = "Log Analytics workspace ID for diagnostic settings"
   type        = string
-  default     = null
 }
 
-variable "bypass_data_sources" {
-  description = "When true, skip subnet and log analytics data source reads and use subnet_id / log_analytics_workspace_id directly. Must be set to true on first deploy when these resources are created in the same apply."
+variable "rbac_authorization_enabled" {
+  description = "Enable RBAC authorization for Key Vault"
   type        = bool
-  default     = false
-}
-
-variable "keyvault_private_dns_zone_id" {
-  description = "Full ARM resource ID of the privatelink.vaultcore.azure.net Private DNS zone (e.g. /subscriptions/.../privateDnsZones/privatelink.vaultcore.azure.net). When set, OpenTofu manages the private_dns_zone_group on the private endpoint so the A record lands in the correct zone."
-  type        = string
-  default     = null
+  default     = true
 }

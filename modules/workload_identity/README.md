@@ -2,7 +2,7 @@
 
 ## Purpose in this architecture
 
-This is how a specific application running as a pod on `modules/aks` reaches `modules/keyvault` for secrets, without a connection string or client secret stored anywhere in your container image or Kubernetes manifests. For example, if you build the file-scanning consumer described in the root `README.md` as a container running in AKS (rather than an Azure Function), this is the module that lets that pod read whatever secret it needs directly from Key Vault.
+Lets a specific Kubernetes pod (via its ServiceAccount) authenticate directly to Key Vault with no stored credential, using AKS's OIDC issuer. This is how your application running in AKS is meant to reach secrets in `keyvault` - and it's also how this codebase's own Ratify/Notation image-signature verification identity is set up (see the `ratify_identity` module block in the root `main.tf`).
 
 This module creates an Azure AD Workload Identity for AKS, enabling Kubernetes pods to authenticate to Azure services (like Key Vault) without storing credentials.
 
@@ -21,12 +21,12 @@ AKS cluster must have:
 
 ## Usage
 
-```terraform
+```hcl
 module "workload_identity" {
   source = "./modules/workload_identity"
   
-  identity_name        = "id-aks-workload-dev-uks-01"
-  resource_group_name  = "rg-aks-dev-uks-01"
+  identity_name        = "id-aks-workload-dpn-azure-uks-01"
+  resource_group_name  = "rg-aks-dpn-azure-uks-01"
   location             = "uksouth"
   oidc_issuer_url      = module.aks.oidc_issuer_url
   namespace            = "default"
@@ -69,7 +69,7 @@ spec:
     - name: AZURE_CLIENT_ID
       value: "<workload_identity.client_id>"
     - name: KEY_VAULT_URL
-      value: "https://vault-dpn-dev-uks-08.vault.azure.net/"
+      value: "https://kv-dpn-azure-uks-01.vault.azure.net/"
 ```
 
 ### 3. Access Key Vault from Application

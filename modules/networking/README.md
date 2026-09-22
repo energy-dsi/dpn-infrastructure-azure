@@ -1,10 +1,8 @@
-﻿# Networking Module
+# Networking Module
 
 ## Purpose in this architecture
 
-This is the shared backbone every other module in this repo depends on: it carves the subnets out of your **existing** VNet (this module does not create the VNet itself - that's assumed to be shared platform infrastructure you don't own) that every private endpoint - AKS, Key Vault, ACR, storage, Event Grid, Service Bus - lands in. `dpn-azure-infrastructure/main.tf` calls this module once, with every subnet the whole deployment needs declared in the `subnets` map, and every other module then references `module.networking.subnet_ids["..."]`.
-
-Subnets are created via `null_resource` + `local-exec` (Azure CLI) rather than a plain `azurerm_subnet` resource, so that the subnet and its NSG can be attached atomically at creation time - a workaround for tenants whose Azure Policy requires an NSG to already be attached the moment a subnet is created, which a two-step "create subnet, then associate NSG" apply can't satisfy.
+Creates subnets (and their NSGs) in your **existing** VNet - every other module's private endpoint lands in a subnet this module creates. It also supports an optional per-subnet route table (UDR); the example config wires an **empty** one to the `aks` subnet, so a firewall/NVA can be added as its default route later without any AKS module change.
 
 This module creates subnets in an existing Azure Virtual Network with optional Network Security Groups (NSGs) and diagnostic settings.
 
@@ -16,6 +14,7 @@ This module creates subnets in an existing Azure Virtual Network with optional N
 - Configurable NSG rules
 - Diagnostic settings integration with Log Analytics
 - Support for private endpoint network policies
+- Optional per-subnet route table (UDR) + association - bring your own routes (e.g. a default route to a firewall/NVA); the example config wires an **empty** one to the `aks` subnet so a firewall can be added as the next hop later without changing the AKS module itself
 
 ## Usage
 
@@ -23,24 +22,24 @@ This module creates subnets in an existing Azure Virtual Network with optional N
 module "networking" {
   source = "./networking"
   
-  vnet_name                = "vnet-app-dev-uks-01"
-  vnet_resource_group_name = "rg-network-dev-uks-01"
+  vnet_name                = "vnet-dpn-azure-uks-01"
+  vnet_resource_group_name = "rg-dpn-azure-uks-01"
   location                 = "UK South"
   
   subnets = {
     aks = {
-      address_prefix = "10.0.4.0/27"
+      address_prefix = "10.0.1.64/27"
     }
     keyvault = {
-      address_prefix = "10.0.4.32/29"
+      address_prefix = "10.0.1.112/29"
       create_nsg     = true
       nsg_name       = "nsg-keyvault"
     }
   }
   
   enable_diagnostic_settings        = true
-  log_analytics_workspace_name      = "log-app-dev-uks-01"
-  log_analytics_resource_group_name = "rg-monitoring-dev-uks-01"
+  log_analytics_workspace_name      = "law-dpn-azure-uks-01"
+  log_analytics_resource_group_name = "rg-law-dpn-azure-uks-01"
   
   tags = {
     Environment = "Development"

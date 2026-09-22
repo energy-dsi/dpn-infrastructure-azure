@@ -41,7 +41,12 @@ output "private_endpoint_ip_address" {
 
 output "acr_subnet_id" {
   description = "The ID of the ACR subnet"
-  value       = data.azurerm_subnet.acr.id
+  value       = var.subnet_id
+}
+
+output "private_dns_zone_id" {
+  description = "The ID of the private DNS zone"
+  value       = data.azurerm_private_dns_zone.acr.id
 }
 
 output "user_assigned_identity_id" {
