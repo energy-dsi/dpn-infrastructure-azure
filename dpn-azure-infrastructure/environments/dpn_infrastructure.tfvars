@@ -7,7 +7,7 @@
 # (environments/dpn_infrastructure.tfvars) as their -var-file.
 # Naming Convention: <type>-dpn-azure-<region>-<instance>
 # Subscription: <your-subscription-name> (<your-subscription-id>)
-# VNet CIDR: 10.0.1.0/24
+# VNet CIDR: 10.1.0.0/24
 # ========================================
 
 subscription_id = "00000000-0000-0000-0000-000000000000"
@@ -23,11 +23,11 @@ environment              = "dev"
 instance_number          = "01"
 
 # Subnet Configuration
-# VNet: 10.0.1.0/24 (256 addresses)
-# Tfstate subnet: 10.0.1.144/28 (managed by bootstrap)
+# VNet: 10.1.0.0/24 (256 addresses)
+# Tfstate subnet: 10.1.0.144/28 (managed by bootstrap)
 subnets = {
   aks = {
-    address_prefix                    = "10.0.1.0/27" # 32 addresses
+    address_prefix                    = "10.1.0.0/27" # 32 addresses
     create_nsg                        = true
     nsg_name                          = "nsg-aks"
     nsg_rules                         = {}
@@ -48,7 +48,7 @@ subnets = {
     }
   }
   keyvault = {
-    address_prefix                    = "10.0.1.32/29" # 8 addresses
+    address_prefix                    = "10.1.0.32/29" # 8 addresses
     create_nsg                        = true
     nsg_name                          = "nsg-keyvault"
     nsg_rules                         = {}
@@ -57,7 +57,7 @@ subnets = {
     private_endpoint_network_policies = "Enabled"
   }
   acr = {
-    address_prefix                    = "10.0.1.40/29" # 8 addresses
+    address_prefix                    = "10.1.0.40/29" # 8 addresses
     create_nsg                        = true
     nsg_name                          = "nsg-acr"
     nsg_rules                         = {}
@@ -66,7 +66,7 @@ subnets = {
     private_endpoint_network_policies = "Enabled"
   }
   loganalytics = {
-    address_prefix                    = "10.0.1.48/29" # 8 addresses
+    address_prefix                    = "10.1.0.48/29" # 8 addresses
     create_nsg                        = true
     nsg_name                          = "nsg-loganalytics"
     nsg_rules                         = {}
@@ -75,7 +75,7 @@ subnets = {
     private_endpoint_network_policies = "Enabled"
   }
   redis = {
-    address_prefix                    = "10.0.1.56/29" # 8 addresses
+    address_prefix                    = "10.1.0.56/29" # 8 addresses
     create_nsg                        = true
     nsg_name                          = "nsg-redis"
     nsg_rules                         = {}
@@ -84,7 +84,7 @@ subnets = {
     private_endpoint_network_policies = "Enabled"
   }
   storage = {
-    address_prefix                    = "10.0.1.80/29" # 8 addresses
+    address_prefix                    = "10.1.0.80/29" # 8 addresses
     create_nsg                        = true
     nsg_name                          = "nsg-storage"
     nsg_rules                         = {}
@@ -93,7 +93,7 @@ subnets = {
     private_endpoint_network_policies = "Enabled"
   }
   vm = {
-    address_prefix                    = "10.0.1.128/28" # 16 addresses for Windows VMs
+    address_prefix                    = "10.1.0.128/28" # 16 addresses for Windows VMs
     create_nsg                        = true
     nsg_name                          = "nsg-vm"
     nsg_rules                         = {}
@@ -102,7 +102,7 @@ subnets = {
     private_endpoint_network_policies = "Enabled"
   }
   devstorage = {
-    address_prefix                    = "10.0.1.88/29" # 8 addresses for developer storage
+    address_prefix                    = "10.1.0.88/29" # 8 addresses for developer storage
     create_nsg                        = true
     nsg_name                          = "nsg-devstorage"
     nsg_rules                         = {}
@@ -110,34 +110,34 @@ subnets = {
     default_outbound_access_enabled   = true
     private_endpoint_network_policies = "Enabled"
   }
-  snet-evgt-dpn-uks-01 = {
-    address_prefix                    = "10.0.1.64/29" # 8 addresses for Event Grid PE
+  snet-evgt-dpn-azure-uks-01 = {
+    address_prefix                    = "10.1.0.64/29" # 8 addresses for Event Grid PE
     create_nsg                        = true
-    nsg_name                          = "nsg-evgt-dpn-uks-01"
+    nsg_name                          = "nsg-evgt-dpn-azure-uks-01"
     nsg_rules                         = {}
     delegation                        = null
     default_outbound_access_enabled   = true
     private_endpoint_network_policies = "Enabled"
   }
-  snet-sb-dpn-uks-01 = {
-    address_prefix                    = "10.0.1.72/29" # 8 addresses for Service Bus PE
+  snet-sb-dpn-azure-uks-01 = {
+    address_prefix                    = "10.1.0.72/29" # 8 addresses for Service Bus PE
     create_nsg                        = true
-    nsg_name                          = "nsg-sb-dpn-uks-01"
+    nsg_name                          = "nsg-sb-dpn-azure-uks-01"
     nsg_rules                         = {}
     delegation                        = null
     default_outbound_access_enabled   = true
     private_endpoint_network_policies = "Enabled"
   }
-  snet-stfs-dpn-uks-01 = {
-    address_prefix                    = "10.0.1.192/29" # 8 addresses for file scanning service storage PE
+  snet-stfs-dpn-azure-uks-01 = {
+    address_prefix                    = "10.1.0.192/29" # 8 addresses for file scanning service storage PE
     create_nsg                        = true
-    nsg_name                          = "nsg-stfs-dpn-uks-01"
+    nsg_name                          = "nsg-stfs-dpn-azure-uks-01"
     nsg_rules                         = {}
     delegation                        = null
     default_outbound_access_enabled   = true
     private_endpoint_network_policies = "Enabled"
   }
-  # tfstate subnet: 10.0.1.144/28 (managed by bootstrap pipeline)
+  # tfstate subnet: 10.1.0.144/28 (managed by bootstrap pipeline)
   # Excluded from Terraform to avoid conflicts with bootstrap-created resources
 }
 
@@ -480,7 +480,7 @@ observability_logging_storage_file_share_quota_gb           = 1
 observability_logging_storage_create_file_endpoint          = false
 observability_logging_storage_enable_diagnostic_settings    = true
 observability_logging_storage_encryption_enabled            = true # CMK via keyvault_initial_keys["cmk-key"] above
-observability_logging_storage_subnet_name                   = "snet-stfs-dpn-uks-01"
+observability_logging_storage_subnet_name                   = "snet-stfs-dpn-azure-uks-01"
 
 observability_logging_storage_data_receiver_principal_ids    = []
 observability_logging_storage_data_contributor_principal_ids = []
